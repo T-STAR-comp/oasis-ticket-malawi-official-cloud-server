@@ -1,0 +1,47 @@
+{
+  "name": "ticket-malawi-cloud-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "db:schema": "node scripts/run-sql.js database/schema.sql",
+    "db:seed": "node scripts/run-sql.js database/seed.sql && node scripts/seed-users.js",
+    "db:migrate": "node scripts/run-sql.js database/migration-v2-admin-email.sql",
+    "db:migrate:payments": "node scripts/run-sql.js database/migration-v3-payment-ledger.sql",
+    "db:migrate:payouts": "node scripts/run-sql.js database/migration-v4-payouts.sql",
+    "db:migrate:payout-verify": "node scripts/run-sql.js database/migration-v5-payout-verification.sql",
+    "db:migrate:verify": "node scripts/run-sql.js database/migration-v6-ticket-verification.sql",
+    "db:migrate:features": "node scripts/run-sql.js database/migration-v7-features.sql",
+    "db:migrate:capacity": "node scripts/run-sql.js database/migration-v8-capacity-queue.sql",
+    "db:migrate:moderation": "node scripts/run-sql.js database/migration-v9-moderation.sql",
+    "db:migrate:terms": "node scripts/run-sql.js database/migration-v10-terms-acceptance.sql",
+    "db:migrate:refund-debt": "node scripts/run-sql.js database/migration-v11-organizer-refund-debt.sql"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.1.1",
+    "mysql2": "^3.12.0",
+    "nodemailer": "^8.0.10",
+    "sharp": "^0.34.5",
+    "uuid": "^11.0.5",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/multer": "^2.1.0",
+    "@types/node": "^22.16.5",
+    "@types/nodemailer": "^8.0.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,303 @@
+TICKET MALAWI — TERMS OF SERVICE & PRIVACY POLICY
+Version 1.2 | Effective 4 June 2026
+Operated by Oasis (Ticket Malawi platform)
+
+================================================================================
+PART A — TERMS OF SERVICE
+================================================================================
+
+1. ACCEPTANCE
+By creating an account, purchasing a ticket, applying as an organizer/partner, or
+otherwise using Ticket Malawi (the "Platform"), you agree to these Terms of Service
+and our Privacy Policy. If you do not agree, do not use the Platform.
+
+Organizer/partner applicants must additionally accept organizer-specific obligations
+below. Account creation requires explicit acceptance via checkbox before signup
+completes.
+
+2. ABOUT THE PLATFORM
+Ticket Malawi is a marketplace for event tickets and intercity travel seats in
+Malawi. We connect customers with independent organizers and operators. Ticket
+Malawi facilitates listing, payment, ticket issuance, and settlement but is not
+the event host or transport operator unless expressly stated.
+
+3. ACCOUNTS
+3.1 Customers must provide accurate registration details and keep credentials secure.
+3.2 Organizers are approved through a partner application process and receive a
+    separate organizer dashboard upon approval.
+3.3 You must be at least 18 years old to create an account.
+3.4 One person must not maintain multiple accounts to evade suspension, bans, or
+    reporting restrictions.
+
+4. PURCHASES & TICKETS
+4.1 Prices are shown in Malawi Kwacha (MWK). A platform service fee may apply at
+    checkout.
+4.2 Confirmed purchases issue digital tickets with a unique reference and QR code
+    where applicable.
+4.3 Tickets may become inactive when an event or travel date has passed by one
+    calendar day, when used at entry, when expired under platform rules, when an
+    organizer cancels the listing (Section 8.6), or when affected by organizer
+    moderation actions described in Section 7.
+4.4 Ticket transfers between customer accounts are permitted only through the
+    Platform's official share feature.
+
+5. ORGANIZER & PARTNER OBLIGATIONS
+5.1 Organizers must provide truthful listing information (dates, venues, capacity,
+    pricing, routes, and operator details).
+5.2 Organizers must honour valid tickets and comply with applicable laws.
+5.3 Organizers must not list fraudulent, misleading, unsafe, illegal, or explicit
+    content. Listings containing prohibited language may result in immediate
+    suspension.
+5.4 Settlement follows our T+1 policy: earnings become withdrawable after the
+    calendar day following payment completion, subject to chargebacks, refunds,
+    moderation holds, and cancellation holds (Section 8.6).
+5.5 Organizers accept commission and fee structures communicated during onboarding
+    and in the finance dashboard.
+
+6. REPORTING — RULES FOR USERS
+6.1 Signed-in customers may report an organizer from a listing page using approved
+    report reasons only:
+    - Fraudulent or fake listing
+    - Misleading event or travel information
+    - No-show or unfair cancellation
+    - Harassment or abuse
+    - Unsafe or illegal content
+    - Payment or refund issue
+    - Spam or scam activity
+    - Poor service or unprofessional conduct
+    - Other (requires a detailed description of at least 20 characters)
+6.2 Reports must be truthful and submitted in good faith. Knowingly false or
+    abusive reports may result in action against the reporting account.
+6.3 You may not report your own organizer account.
+6.4 Duplicate reports of the same reason against the same organizer within 24
+    hours are not accepted.
+6.5 Reports are confidential to the extent permitted by law. We do not disclose
+    reporter identity to the subject organizer during initial review, except where
+    required by law or necessary to resolve a specific dispute with your
+    participation.
+
+7. MODERATION, FLAGS, SUSPENSION & BANS
+7.1 Automated review: When an organizer receives 200 or more user reports (in total
+    or for a single report category), the Platform may:
+    (a) Place a temporary public flag on the organizer profile and listings;
+    (b) Automatically suspend the organizer for seven (7) days.
+7.2 Flagged organizers remain visible with a flag indicator until an administrator
+    reviews the matter. Suspended or banned organizers' listings are removed from
+    public view.
+7.3 Suspension triggers:
+    - Mass reporting threshold (Section 7.1);
+    - Explicit or prohibited language in listings;
+    - Administrator action;
+    - Content or conduct violations.
+7.4 During suspension or ban:
+    - The organizer may sign in but the dashboard is read-only except logout and,
+      for suspensions, submitting an appeal;
+    - Public listings are hidden;
+    - Customers with active tickets see tickets greyed out with a hold message;
+    - Affected customers and the organizer receive email notification.
+7.5 Appeals: Suspended organizers may submit one appeal at a time with a minimum
+    30-character explanation. Administrators may approve or reject appeals. Approval
+    may restore approved status where appropriate.
+7.6 Permanent ban: Administrators may permanently ban an organizer after review,
+    including for severe or repeated violations. Effects include:
+    - All non-draft listings taken down;
+    - Organizer account permanently restricted;
+    - Eligible active tickets reviewed for refund under Section 8.
+7.7 Ticket Malawi's decisions on moderation are exercised in good faith to protect
+    users. They do not replace law-enforcement or court processes where those apply.
+
+8. REFUNDS — PERMANENT BAN AND LISTING CANCELLATION
+8.1 When an organizer is permanently banned, the Platform reviews active tickets
+    from that organizer.
+8.2 Where payment has completed and T+1 settlement has occurred for the underlying
+    order, customers may receive a 90% refund of the amount paid on the affected
+    ticket.
+8.3 The remaining 10% covers payment processing and Ticket Malawi's convenience fee,
+    allocated between processing costs and platform fee as determined by our refund
+    policy.
+8.4 Where settlement has not completed, refunds may be deferred or skipped until
+    settlement criteria are met; customers are notified by email.
+8.5 Refunds are processed through our payment partners where technically available;
+    recorded refund status is visible in our systems.
+8.6 Listing cancellation: When an organizer cancels an event or travel listing
+    through the Platform's cancel action:
+    (a) The listing is marked cancelled and removed from sale;
+    (b) All active tickets for that listing become invalid;
+    (c) Eligible ticket holders are notified by email;
+    (d) Where payment has completed and T+1 settlement has occurred, customers
+        receive a 90% refund of the amount paid on the affected ticket;
+    (e) The remaining 10% covers payment processing and Ticket Malawi's convenience
+        fee, as with permanent-ban refunds (Sections 8.2–8.3);
+    (f) Where settlement has not completed, refunds are deferred until T+1 criteria
+        are met; customers receive email notice of cancellation and pending refund;
+    (g) All funds associated with the cancelled listing (settled and unsettled
+        organizer earnings from that listing) are held and are not available for
+        organizer payout;
+    (h) The organizer receives email confirmation of cancellation, refund summary,
+        and funds held.
+8.7 Cancellation refunds and permanent-ban refunds follow the same 90%/10% split.
+    Organizers may not circumvent cancellation holds by changing listing status
+    outside the official cancel workflow.
+8.8 Refund debt and recovery from future sales:
+    (a) If an organizer has withdrawn earnings and subsequently cancels a listing
+        or is permanently banned, customer refunds may exceed funds held from the
+        affected listing(s). The shortfall is recorded as refund debt on the
+        organizer account.
+    (b) Funds held from a cancelled listing are applied toward customer refunds
+        before refund debt is calculated.
+    (c) While refund debt remains outstanding, organizer withdrawals are blocked.
+    (d) Settled earnings from new ticket sales on the organizer's active listings
+        are applied to outstanding customer refunds until refund debt is fully
+        cleared. Only after every affected refund has been paid or recovered
+        will the organizer have a positive withdrawable balance again.
+    (e) This recovery applies across all of the organizer's listings until the
+        outstanding refund debt reaches zero.
+
+9. PROHIBITED CONDUCT
+Users and organizers must not: commit fraud; circumvent security; scrape the
+Platform; harass staff or users; manipulate reporting; impersonate others; upload
+malware; or use the Platform for unlawful purposes.
+
+10. INTELLECTUAL PROPERTY
+Platform branding, software, and design are owned by Oasis / Ticket Malawi.
+Organizers retain rights to their listing content but grant us a licence to display
+it on the Platform.
+
+11. LIMITATION OF LIABILITY
+To the fullest extent permitted by Malawian law, Ticket Malawi is not liable for
+indirect losses, organizer no-shows, third-party transport delays, or events beyond
+our reasonable control. Our aggregate liability relating to a transaction is limited
+to the fees paid to us for that transaction.
+
+12. CHANGES
+We may update these Terms. Material changes will be reflected in the version date.
+Continued use after notice constitutes acceptance where permitted by law.
+
+13. GOVERNING LAW
+These Terms are governed by the laws of the Republic of Malawi. Disputes are
+subject to the courts of Malawi unless mandatory consumer protections provide
+otherwise.
+
+14. CONTACT
+Ticket Malawi / Oasis — legal & support enquiries via the contact details published
+on the Platform.
+
+
+================================================================================
+PART B — PRIVACY POLICY (MALAWI DATA PROTECTION ACT 2024)
+================================================================================
+
+1. INTRODUCTION
+Ticket Malawi respects your privacy. This Policy explains how we collect, use,
+store, and protect personal data in compliance with the Malawi Data Protection Act,
+2024 ("the Act") and regulations issued by the Malawi Communications Regulatory
+Authority (MACRA) and the Data Protection Authority.
+
+We are committed to lawfulness, fairness, transparency, purpose limitation, data
+minimisation, accuracy, storage limitation, integrity, and confidentiality.
+
+2. ROLES
+Ticket Malawi / Oasis acts as a data controller for account, transaction, and
+moderation data. Payment processing may involve data processors (e.g. PayChangu)
+acting under contract.
+
+3. DATA WE COLLECT
+3.1 Account data: name, email, phone, national ID (optional), username, password
+    (hashed), role, verification status.
+3.2 Transaction data: orders, ticket references, payment method, amounts, seats.
+3.3 Organizer data: company details, payout bank information, listings, buyer
+    manifests.
+3.4 Moderation data: reports, flags, appeals, suspension records, verification
+    scans.
+3.5 Technical data: logs, IP addresses, device/browser information for security.
+3.6 Communications: emails we send (verification, reminders, moderation notices).
+
+4. LAWFUL BASES FOR PROCESSING
+We process personal data on one or more of the following bases under the Act:
+- Contract: to provide ticketing, payments, and organizer services you request;
+- Consent: marketing only where you opt in (see Section 6);
+- Legal obligation: fraud prevention, regulatory requests, tax/record-keeping;
+- Legitimate interests: platform security, abuse prevention, and service improvement
+  balanced against your rights.
+
+5. HOW WE USE DATA — NO ADVERTISING USE
+5.1 We use your data to operate the Platform: authentication, ticket issuance,
+    payments, settlement, customer support, event reminders, and moderation.
+5.2 WE DO NOT SELL YOUR PERSONAL DATA.
+5.3 WE DO NOT USE CUSTOMER PERSONAL DATA FOR THIRD-PARTY ADVERTISING OR BEHAVIOURAL
+    ADVERTISING PROFILING.
+5.4 Service-related emails (verification, receipts, reminders, security, moderation
+    updates) are not marketing and may be sent as part of the service.
+5.5 Promotional communications, if any in future, will require separate opt-in
+    consent where required by law.
+
+6. REPORTING DATA
+6.1 When you submit a report, we store your user ID, the organizer reported,
+    optional listing ID, reason, details, and timestamp.
+6.2 This data is used solely for trust & safety review, automated threshold checks,
+    administrator investigation, and legal compliance.
+6.3 Report data is retained for the period necessary to resolve complaints and
+    defend legal claims, then deleted or anonymised per our retention schedule.
+
+7. SHARING & PROCESSORS
+We share data only where necessary with:
+- Payment providers (PayChangu) to process payments and payouts;
+- Email delivery services for transactional messages;
+- Infrastructure providers hosting our systems under confidentiality obligations;
+- Authorities when required by Malawian law or valid legal process.
+
+8. INTERNATIONAL TRANSFERS
+Where data is processed outside Malawi, we implement appropriate safeguards as
+required by the Act (e.g. contractual clauses, adequacy assessments).
+
+9. RETENTION
+We retain data only as long as necessary for the purposes collected, including:
+- Active accounts: duration of relationship plus reasonable period;
+- Financial records: as required for settlement, tax, and audit;
+- Moderation records: to enforce decisions and prevent repeat abuse;
+- Inactive accounts: deleted or anonymised per internal schedules.
+
+10. YOUR RIGHTS UNDER THE ACT
+Subject to exceptions in the Act, you may have the right to:
+- Access your personal data;
+- Rectify inaccurate data;
+- Erase data in certain circumstances;
+- Restrict or object to certain processing;
+- Data portability where technically feasible;
+- Withdraw consent where processing is consent-based;
+- Lodge a complaint with the Data Protection Authority (info@dpa.mw).
+
+To exercise rights, contact us using Platform support channels. We respond within
+timeframes required by law.
+
+11. SECURITY
+We implement technical and organisational measures including access controls,
+encrypted connections (HTTPS), hashed passwords, and restricted staff access.
+No method of transmission is 100% secure; report suspected compromise promptly.
+
+12. DATA BREACHES
+If a personal data breach poses risk to your rights, we will notify MACRA / the
+Data Protection Authority and affected individuals as required by the Act,
+typically within 72 hours of becoming aware where feasible.
+
+13. CHILDREN
+The Platform is not directed at children under 18. We do not knowingly collect
+children's data without parental authority.
+
+14. COOKIES & LOCAL STORAGE
+We use essential cookies and local storage (e.g. authentication tokens) for login
+and session management. Non-essential analytics cookies, if introduced, will be
+disclosed with consent options where required.
+
+15. CHANGES TO THIS POLICY
+We update this Policy when practices or law change. The version date at the top
+indicates the current edition. Material changes will be communicated on the
+Platform.
+
+16. CONTACT
+Privacy enquiries: via Ticket Malawi support channels published on the website.
+Data Protection Authority: info@dpa.mw | www.dpa.mw
+
+================================================================================
+END OF DOCUMENT
+================================================================================

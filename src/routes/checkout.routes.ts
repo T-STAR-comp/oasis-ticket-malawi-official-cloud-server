@@ -1,0 +1,119 @@
+import { Router } from "express";
+import { z } from "zod";
+import * as checkoutService from "../services/checkout.service.js";
+import { getListingById } from "../services/listings.service.js";
+import * as queueService from "../services/queue.service.js";
+import { PayChanguError } from "../services/paychangu.service.js";
+import { requireAuth, type AuthedRequest } from "../middleware/auth.js";
+import { fail, ok } from "../utils/http.js";
+
+const checkoutSchema = z.object({
+  qty: z.number().int().min(1).max(20).default(1),
+  seatNumbers: z.array(z.number().int().positive()).optional(),
+  paymentMethod: z.enum(["airtel", "tnm", "card"]),
+  paymentPhone: z.string().optional(),
+  contactName: z.string().min(2),
+  contactEmail: z.string().email(),
+  contactPhone: z.string().min(8),
+  nationalId: z.string().optional(),
+  queueId: z.string().uuid().optional(),
+});
+
+const accessQuerySchema = z.object({
+  qty: z.coerce.number().int().min(1).max(20).default(1),
+  seats: z.string().optional(),
+});
+
+export const checkoutRouter = Router();
+
+/** GET /api/checkout/:listingId/access — queue position / direct checkout access */
+checkoutRouter.get("/:listingId/access", requireAuth, async (req, res, next) => {
+  try {
+    const user = (req as AuthedRequest).user!;
+    const query = accessQuerySchema.parse(req.query);
+    const listingId = String(req.params.listingId);
+    const listing = await getListingById(listingId, true);
+    if (!listing) return fail(res, "Listing not found", 404);
+
+    const seatNumbers = query.seats
+      ? query.seats.split(",").map((s) => Number(s.trim())).filter((n) => n > 0)
+      : undefined;
+    const qty =
+      seatNumbers && seatNumbers.length > 0 ? seatNumbers.length : query.qty;
+
+    const access = await queueService.getCheckoutAccess(
+      listingId,
+      user.id,
+      qty,
+      seatNumbers,
+      listing.kind,
+      listing.ticketCapacity ?? null,
+    );
+    return ok(res, access);
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid access request", 400);
+    next(err);
+  }
+});
+
+/** GET /api/checkout/queue/:queueId — poll queue position */
+checkoutRouter.get("/queue/:queueId", requireAuth, async (req, res, next) => {
+  try {
+    const user = (req as AuthedRequest).user!;
+    const result = await queueService.pollQueueStatus(String(req.params.queueId), user.id);
+    return ok(res, result);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("not found")) {
+      return fail(res, err.message, 404);
+    }
+    next(err);
+  }
+});
+
+/** POST /api/checkout/:listingId — initiate PayChangu payment (ledger pending) */
+checkoutRouter.post("/:listingId", requireAuth, async (req, res, next) => {
+  try {
+    const user = (req as AuthedRequest).user!;
+    const body = checkoutSchema.parse(req.body);
+    const listingId = String(req.params.listingId);
+    const result = await checkoutService.initiateCheckout(user.id, listingId, body);
+    return ok(res, result, 201);
+  } catch (err) {
+    if (err instanceof PayChanguError) {
+      return fail(res, err.message, err.status >= 400 && err.status < 500 ? err.status : 402);
+    }
+    if (err instanceof Error) {
+      if (err.message.includes("not available")) return fail(res, err.message, 409);
+      if (err.message.includes("payment in progress")) return fail(res, err.message, 409);
+      if (err.message.includes("sold out") || err.message.includes("remaining")) {
+        return fail(res, err.message, 409);
+      }
+      if (err.message.includes("queue") || err.message.includes("High demand")) {
+        return fail(res, err.message, 409);
+      }
+      if (err.message.includes("not available for purchase")) {
+        return fail(res, err.message, 409);
+      }
+      if (err.message.includes("required") || err.message.includes("not enabled")) {
+        return fail(res, err.message, 400);
+      }
+      if (err.message.includes("PayChangu")) return fail(res, err.message, 402);
+    }
+    next(err);
+  }
+});
+
+/** GET /api/checkout/orders/:orderId/status — poll payment + ticket generation */
+checkoutRouter.get("/orders/:orderId/status", requireAuth, async (req, res, next) => {
+  try {
+    const user = (req as AuthedRequest).user!;
+    const orderId = String(req.params.orderId);
+    const result = await checkoutService.getOrderPaymentStatus(user.id, orderId);
+    return ok(res, result);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("not found")) {
+      return fail(res, err.message, 404);
+    }
+    next(err);
+  }
+});

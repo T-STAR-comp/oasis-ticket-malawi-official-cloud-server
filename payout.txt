@@ -1,0 +1,166 @@
+PAYCHANGU PAYOUTS REFERENCE SHEET
+Supported Banks and UUIDs
+Bank Name	Bank UUID
+National Bank of Malawi	82310dd1-ec9b-4fe7-a32c-2f262ef08681
+Ecobank Malawi Limited	87e62436-0553-4fb5-a76d-f27d28420c5b
+FDH Bank Limited	b064172a-8a1b-4f7f-aad7-81b036c46c57
+Standard Bank Malawi	e7447c2c-c147-4907-b194-e087fe8d8585
+Centenary Bank	236760c9-3045-4a01-990e-497b28d115bb
+First Capital Bank Limited	968ac588-3b1f-4d89-81ff-a3d43a599003
+CDH Investment Bank	c759d7b6-ae5c-4a95-814a-79171271897a
+TNM Mpamba	5e9946ae-76ed-43f5-ad59-63e09096006a
+Airtel Money	e8d5fca0-e5ac-4714-a518-484be9011326
+NBS Bank Limited	86007bf5-1b04-49ba-84c1-9758bbf5c996
+Fetch Available Banks
+
+Endpoint:
+
+GET https://api.paychangu.com/banks
+
+Headers:
+
+Authorization: Bearer YOUR_SECRET_KEY
+Accept: application/json
+
+JavaScript (Browser)
+async function getBanks() {
+  const response = await fetch(
+    "https://api.paychangu.com/banks",
+    {
+      method: "GET",
+      headers: {
+        Authorization: "Bearer YOUR_SECRET_KEY",
+        Accept: "application/json"
+      }
+    }
+  );
+
+  const data = await response.json();
+
+  console.log(data);
+}
+
+getBanks();
+Node.js (Axios)
+const axios = require("axios");
+
+async function getBanks() {
+  try {
+    const response = await axios.get(
+      "https://api.paychangu.com/banks",
+      {
+        headers: {
+          Authorization: "Bearer YOUR_SECRET_KEY",
+          Accept: "application/json"
+        }
+      }
+    );
+
+    console.log(response.data);
+
+  } catch (error) {
+
+    console.error(error.response?.data);
+
+  }
+}
+
+getBanks();
+Initialize a Payout
+
+Endpoint:
+
+POST https://api.paychangu.com/direct-charge/payouts/initialize
+
+Headers:
+
+Authorization: Bearer YOUR_SECRET_KEY
+Content-Type: application/json
+
+Body Example:
+
+{
+  "payout_method": "bank_transfer",
+  "bank_uuid": "82310dd1-ec9b-4fe7-a32c-2f262ef08681",
+  "amount": 5000,
+  "charge_id": "WD123456",
+  "bank_account_name": "John Banda",
+  "bank_account_number": "1234567890"
+}
+Node.js Payout Example
+const axios = require("axios");
+
+async function payout() {
+
+  try {
+
+    const response = await axios.post(
+      "https://api.paychangu.com/direct-charge/payouts/initialize",
+      {
+        payout_method: "bank_transfer",
+        bank_uuid:
+          "82310dd1-ec9b-4fe7-a32c-2f262ef08681",
+        amount: 5000,
+        charge_id: "WD123456",
+        bank_account_name: "John Banda",
+        bank_account_number: "1234567890"
+      },
+      {
+        headers: {
+          Authorization:
+            "Bearer YOUR_SECRET_KEY",
+          "Content-Type":
+            "application/json"
+        }
+      }
+    );
+
+    console.log(response.data);
+
+  } catch (error) {
+
+    console.error(
+      error.response?.data
+    );
+
+  }
+}
+
+payout();
+Mobile Money Payout Example
+
+Airtel Money UUID:
+
+e8d5fca0-e5ac-4714-a518-484be9011326
+
+Mpamba UUID:
+
+5e9946ae-76ed-43f5-ad59-63e09096006a
+
+Example:
+
+{
+  "payout_method": "bank_transfer",
+  "bank_uuid": "e8d5fca0-e5ac-4714-a518-484be9011326",
+  "amount": 5000,
+  "charge_id": "WD123456",
+  "bank_account_name": "John Banda",
+  "bank_account_number": "265991234567"
+}
+
+Use the mobile number as the bank_account_number.
+
+Verifying a Payout
+
+IMPORTANT:
+
+A successful API response only means PayChangu accepted the payout request.
+
+It DOES NOT mean the money has been delivered.
+
+The payout may still be:
+
+pending
+processing
+successful
+failed
