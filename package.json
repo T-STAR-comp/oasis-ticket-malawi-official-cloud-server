@@ -10,6 +10,7 @@
     "build": "tsc",
     "build:frontend": "node scripts/build-frontend.mjs",
     "build:all": "npm run build:frontend && npm run build",
+    "ship": "npm run build:all",
     "start:prod": "node server.cjs",
     "db:schema": "node scripts/run-sql.js database/schema.sql",
     "db:seed": "node scripts/run-sql.js database/seed.sql && node scripts/seed-users.js",

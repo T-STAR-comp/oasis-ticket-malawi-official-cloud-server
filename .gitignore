@@ -1,6 +1,7 @@
 node_modules/
-dist/
 .env
 *.log
-public/*
-!public/.gitkeep
+public/server/
+
+# Built assets are committed for production deploy (git pull on cPanel).
+# Run `npm run ship` before pushing after frontend or API changes.

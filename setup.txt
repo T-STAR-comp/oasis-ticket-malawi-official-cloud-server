@@ -4,19 +4,18 @@ cd ticket-malawi-cloud-server
 SERVE_FRONTEND=true in .env
 npm run dev
 
-PRODUCTION BUILD
-----------------
-npm run build:all
-(requires main app as a sibling folder)
+SHIP TO PRODUCTION (before git push)
+------------------------------------
+npm run ship
+
+This builds the main app into public/client/ and compiles dist/.
+Commit and push both folders with your code changes.
 
 CPANEL / SPACESHIP
 ------------------
-Upload both repos side by side, e.g.:
-  oasis-ticket-malawi-official-cloud-server/
-  oasis-ticket-malawi-official-main-app/
+git pull in oasis-ticket-malawi-official-cloud-server
+npm install --omit=dev
+(create .env from .env.example)
+Restart Node app (startup file: server.cjs)
 
-In cloud-server Terminal:
-  npm install
-  npm run build:all
-  (create .env from .env.example)
-  Restart Node app (startup file: server.cjs)
+No build step needed on the server if you ran ship before pushing.
