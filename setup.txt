@@ -1,10 +1,22 @@
+LOCAL DEV
+---------
 cd ticket-malawi-cloud-server
+SERVE_FRONTEND=true in .env
+npm run dev
 
+PRODUCTION BUILD
+----------------
 npm run build:all
-(set SERVE_FRONTEND=true in .env for unified site + API)
+(requires main app as a sibling folder)
 
-Dev:  npm run dev
-Prod: npm run start   (runs server.cjs)
+CPANEL / SPACESHIP
+------------------
+Upload both repos side by side, e.g.:
+  oasis-ticket-malawi-official-cloud-server/
+  oasis-ticket-malawi-official-main-app/
 
-cPanel / Passenger startup file: server.cjs
-(requires npm run build so dist/index.js exists)
+In cloud-server Terminal:
+  npm install
+  npm run build:all
+  (create .env from .env.example)
+  Restart Node app (startup file: server.cjs)
