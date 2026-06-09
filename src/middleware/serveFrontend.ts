@@ -21,6 +21,26 @@ function resolveFrontendDir(): string | null {
   return null;
 }
 
+function findStylesheets(frontendDir: string): string[] {
+  const assetsDir = path.join(frontendDir, "assets");
+  if (!fs.existsSync(assetsDir)) return [];
+  return fs
+    .readdirSync(assetsDir)
+    .filter((name) => name.endsWith(".css"))
+    .map((name) => `/assets/${name}`);
+}
+
+function verifyFrontendAssets(frontendDir: string): void {
+  const cssFiles = findStylesheets(frontendDir);
+  if (cssFiles.length === 0) {
+    console.warn(
+      "[frontend] No CSS bundle found under public/client/assets. Run: npm run build:frontend",
+    );
+    return;
+  }
+  console.log(`[frontend] CSS bundles: ${cssFiles.join(", ")}`);
+}
+
 function shouldServeSpaShell(req: Request): boolean {
   if (req.method !== "GET" && req.method !== "HEAD") return false;
   const p = req.path;
@@ -42,11 +62,21 @@ export function registerFrontend(app: Express, enabled: boolean) {
     return;
   }
 
+  verifyFrontendAssets(frontendDir);
+
   app.use(
     express.static(frontendDir, {
       index: false,
       maxAge: process.env.NODE_ENV === "production" ? "1d" : 0,
       dotfiles: "ignore",
+      setHeaders(res, filePath) {
+        if (filePath.endsWith(".css")) {
+          res.setHeader("Content-Type", "text/css; charset=utf-8");
+        }
+        if (filePath.endsWith(".js")) {
+          res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+        }
+      },
     }),
   );
 

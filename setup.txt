@@ -1,4 +1,10 @@
-npm run build:frontend
+cd ticket-malawi-cloud-server
 
-cd cloud server
 npm run build:all
+(set SERVE_FRONTEND=true in .env for unified site + API)
+
+Dev:  npm run dev
+Prod: npm run start   (runs server.cjs)
+
+cPanel / Passenger startup file: server.cjs
+(requires npm run build so dist/index.js exists)
