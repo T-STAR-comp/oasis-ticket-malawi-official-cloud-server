@@ -5,6 +5,7 @@ import { getListingById } from "../services/listings.service.js";
 import * as queueService from "../services/queue.service.js";
 import { PayChanguError } from "../services/paychangu.service.js";
 import { requireAuth, type AuthedRequest } from "../middleware/auth.js";
+import * as referralService from "../services/referral.service.js";
 import { fail, ok } from "../utils/http.js";
 
 const checkoutSchema = z.object({
@@ -17,6 +18,7 @@ const checkoutSchema = z.object({
   contactPhone: z.string().min(8),
   nationalId: z.string().optional(),
   queueId: z.string().uuid().optional(),
+  referralCode: z.string().min(2).max(64).optional(),
 });
 
 const accessQuerySchema = z.object({
@@ -25,6 +27,28 @@ const accessQuerySchema = z.object({
 });
 
 export const checkoutRouter = Router();
+
+/** GET /api/checkout/:listingId/referral — validate referral code */
+checkoutRouter.get("/:listingId/referral", async (req, res, next) => {
+  try {
+    const listingId = String(req.params.listingId);
+    const code = String(req.query.code ?? "").trim();
+    const hasActive = await referralService.listingHasActiveReferrals(listingId);
+    if (!code) return ok(res, { hasActiveReferrals: hasActive, valid: false });
+    const referral = await referralService.resolveActiveReferral(listingId, code);
+    if (!referral) return ok(res, { hasActiveReferrals: hasActive, valid: false });
+    return ok(res, {
+      hasActiveReferrals: hasActive,
+      valid: true,
+      code: referral.code,
+      name: referral.name,
+      type: referral.type,
+      cutPercent: referral.cutPercent,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /** GET /api/checkout/:listingId/access — queue position / direct checkout access */
 checkoutRouter.get("/:listingId/access", requireAuth, async (req, res, next) => {

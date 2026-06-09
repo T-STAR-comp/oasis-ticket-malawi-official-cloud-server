@@ -53,6 +53,13 @@ dashboardRouter.get("/tickets/:id/share/recipient", async (req, res, next) => {
     const email = z.string().email().parse(req.query.email);
     const detail = await dashboardService.getUserTicketDetail(user.id, req.params.id);
     if (!detail) return fail(res, "Ticket not found", 404);
+    if (detail.purchase.refund_pending) {
+      return fail(
+        res,
+        "This ticket has a refund in progress. Sharing is disabled until the refund completes.",
+        400,
+      );
+    }
     const recipient = await dashboardService.lookupShareRecipient(user.id, email);
     return ok(res, recipient);
   } catch (err) {

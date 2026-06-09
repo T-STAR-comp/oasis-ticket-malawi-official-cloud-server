@@ -2,6 +2,10 @@ import type { RowDataPacket } from "mysql2";
 import { v4 as uuid } from "uuid";
 import { pool, type QueryParams } from "../db/pool.js";
 import * as emailService from "./email.service.js";
+import {
+  executeCustomerRefundPayment,
+  refundPaymentMethodLabel,
+} from "./refund-payment.service.js";
 
 const PAYMENT_COMPLETED_AT = `COALESCE(pl.completed_at, o.updated_at, o.created_at)`;
 
@@ -115,10 +119,11 @@ async function fulfillPendingRefunds(organizerId: string, budget: number) {
 
   const [pending] = await pool.query<RowDataPacket[]>(
     `SELECT tr.id, tr.refund_amount, tr.user_id, tr.order_id, tr.original_amount,
-            u.email, u.full_name, ut.reference
+            u.email, u.full_name, ut.reference, o.payment_method
      FROM ticket_refunds tr
      JOIN users u ON u.id = tr.user_id
      JOIN user_tickets ut ON ut.id = tr.user_ticket_id
+     JOIN orders o ON o.id = tr.order_id
      WHERE tr.organizer_id = :organizerId AND tr.status = 'pending'
      ORDER BY tr.created_at ASC`,
     { organizerId },
@@ -131,8 +136,23 @@ async function fulfillPendingRefunds(organizerId: string, budget: number) {
     const owed = Number(row.refund_amount);
     if (owed <= 0 || remaining < owed) continue;
 
+    try {
+      await executeCustomerRefundPayment({
+        orderId: String(row.order_id),
+        refundId: String(row.id),
+        refundAmount: owed,
+      });
+    } catch (err) {
+      console.error(
+        "[refund-recovery] Refund payment failed:",
+        row.id,
+        err instanceof Error ? err.message : err,
+      );
+      continue;
+    }
+
     await pool.query(
-      `UPDATE ticket_refunds SET status = 'completed', completed_at = NOW() WHERE id = :id`,
+      `UPDATE ticket_refunds SET status = 'completed', completed_at = NOW(), skip_reason = NULL WHERE id = :id`,
       { id: row.id },
     );
 
@@ -149,6 +169,7 @@ async function fulfillPendingRefunds(organizerId: string, budget: number) {
         owed,
         Number(row.original_amount),
         "listing_cancellation",
+        refundPaymentMethodLabel(String(row.payment_method ?? "")),
       );
     } catch (err) {
       console.error("[refund-recovery] Customer refund email failed:", err);

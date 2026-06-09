@@ -1,0 +1,59 @@
+import type { Express, Request, Response, NextFunction } from "express";
+import express from "express";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { IMAGE_BUCKET_URL_PREFIX } from "../config/images.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function resolveFrontendDir(): string | null {
+  const candidates = [
+    path.resolve(__dirname, "..", "..", "public", "client"),
+    path.resolve(__dirname, "..", "..", "public"),
+  ];
+
+  for (const dir of candidates) {
+    if (fs.existsSync(path.join(dir, "index.html"))) {
+      return dir;
+    }
+  }
+  return null;
+}
+
+function shouldServeSpaShell(req: Request): boolean {
+  if (req.method !== "GET" && req.method !== "HEAD") return false;
+  const p = req.path;
+  if (p.startsWith("/api")) return false;
+  if (p.startsWith(IMAGE_BUCKET_URL_PREFIX)) return false;
+  // Let express.static handle real files (hashed assets, icons, manifest).
+  if (path.extname(p)) return false;
+  return true;
+}
+
+export function registerFrontend(app: Express, enabled: boolean) {
+  if (!enabled) return;
+
+  const frontendDir = resolveFrontendDir();
+  if (!frontendDir) {
+    console.warn(
+      "[frontend] SERVE_FRONTEND is enabled but no index.html was found. Run: npm run build:frontend",
+    );
+    return;
+  }
+
+  app.use(
+    express.static(frontendDir, {
+      index: false,
+      maxAge: process.env.NODE_ENV === "production" ? "1d" : 0,
+      dotfiles: "ignore",
+    }),
+  );
+
+  app.get("*", (req: Request, res: Response, next: NextFunction) => {
+    if (!shouldServeSpaShell(req)) return next();
+    res.sendFile(path.join(frontendDir, "index.html"));
+  });
+
+  console.log(`[frontend] Serving React SPA from ${frontendDir}`);
+}

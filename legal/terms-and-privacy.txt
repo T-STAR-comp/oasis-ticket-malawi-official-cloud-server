@@ -1,6 +1,6 @@
 TICKET MALAWI — TERMS OF SERVICE & PRIVACY POLICY
 Version 1.2 | Effective 4 June 2026
-Operated by Oasis (Ticket Malawi platform)
+Operated by Oasis Tech Capital (Ticket Malawi platform)
 
 ================================================================================
 PART A — TERMS OF SERVICE
@@ -16,10 +16,15 @@ below. Account creation requires explicit acceptance via checkbox before signup
 completes.
 
 2. ABOUT THE PLATFORM
-Ticket Malawi is a marketplace for event tickets and intercity travel seats in
-Malawi. We connect customers with independent organizers and operators. Ticket
-Malawi facilitates listing, payment, ticket issuance, and settlement but is not
-the event host or transport operator unless expressly stated.
+2.1 Ticket Malawi was first introduced in 2024 and re-introduced in 2026 under
+    Oasis Technology and Capital. The platform is now a product of Oasis Tech
+    Capital.
+2.2 Ticket Malawi is a marketplace for event tickets and intercity travel seats
+    in Malawi. We strive to provide competent ticketing services as digital
+    technology use rises across the country. We connect customers with independent
+    organizers and operators.
+2.3 Ticket Malawi facilitates listing, payment, ticket issuance, and settlement
+    but is not the event host or transport operator unless expressly stated.
 
 3. ACCOUNTS
 3.1 Customers must provide accurate registration details and keep credentials secure.

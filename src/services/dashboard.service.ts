@@ -4,13 +4,27 @@ import { pool, type QueryParams } from "../db/pool.js";
 import * as emailService from "./email.service.js";
 import { getListingById } from "./listings.service.js";
 
+async function ticketHasPendingRefund(userTicketId: string): Promise<boolean> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT 1 FROM ticket_refunds
+     WHERE user_ticket_id = :userTicketId AND status = 'pending'
+     LIMIT 1`,
+    { userTicketId },
+  );
+  return rows.length > 0;
+}
+
 export async function getUserTickets(userId: string, status?: "active" | "used" | "expired") {
   let sql = `
     SELECT ut.*, l.title, l.category, l.date_label, l.time_label, l.kind, l.image_url,
            l.operator_name, l.location, l.organizer_id, l.status AS listing_status,
            l.event_starts_on,
            op.status AS organizer_status, op.flagged_at, op.flag_reason,
-           op.suspension_reason
+           op.suspension_reason,
+           EXISTS (
+             SELECT 1 FROM ticket_refunds tr
+             WHERE tr.user_ticket_id = ut.id AND tr.status = 'pending'
+           ) AS refund_pending
     FROM user_tickets ut
     JOIN listings l ON l.id = ut.listing_id
     JOIN organizer_profiles op ON op.user_id = l.organizer_id
@@ -33,8 +47,12 @@ export async function getUserTickets(userId: string, status?: "active" | "used" 
       listingPostponed && r.status === "active"
         ? `This ${r.kind === "travel" ? "trip" : "event"} has been postponed to ${r.date_label}${r.time_label ? ` · ${r.time_label}` : ""}. Your ticket is valid for the new date.`
         : undefined;
+    const refundPending = Boolean(r.refund_pending);
     const cancelledMessage = listingCancelled
       ? `This ${r.kind === "travel" ? "trip" : "event"} was cancelled by the organizer. Your ticket is no longer valid. Eligible purchases receive a 90% refund by email; 10% covers processing and convenience fees.`
+      : undefined;
+    const refundPendingMessage = refundPending
+      ? "A refund is being processed for this ticket. Sharing is disabled until the refund completes."
       : undefined;
     return {
     id: r.id,
@@ -51,9 +69,11 @@ export async function getUserTickets(userId: string, status?: "active" | "used" 
     listingStatus: r.listing_status,
     listingPostponed,
     listingCancelled,
-    holdMessage: organizerRestricted
-      ? "There are issues with this organizer. Your ticket will be available once the issues are cleared."
-      : cancelledMessage ?? postponedMessage,
+    refundPending,
+    holdMessage: refundPendingMessage
+      ?? (organizerRestricted
+        ? "There are issues with this organizer. Your ticket will be available once the issues are cleared."
+        : cancelledMessage ?? postponedMessage),
     ticket: {
       title: r.title,
       category: r.category,
@@ -74,8 +94,9 @@ export async function getUserTicketDetail(userId: string, ticketId: string) {
   );
   const purchase = rows[0];
   if (!purchase) return null;
+  const refundPending = await ticketHasPendingRefund(purchase.id as string);
   const listing = await getListingById(purchase.listing_id as string, true);
-  return { purchase, listing };
+  return { purchase: { ...purchase, refund_pending: refundPending ? 1 : 0 }, listing };
 }
 
 export async function getSpendingSummary(userId: string) {
@@ -153,6 +174,18 @@ export async function shareTicket(
     const ticket = ticketRows[0];
     if (!ticket) {
       throw new Error("Ticket not found or is no longer active");
+    }
+
+    const [pendingRefund] = await conn.query<RowDataPacket[]>(
+      `SELECT 1 FROM ticket_refunds
+       WHERE user_ticket_id = :userTicketId AND status = 'pending'
+       LIMIT 1`,
+      { userTicketId },
+    );
+    if (pendingRefund.length > 0) {
+      throw new Error(
+        "This ticket has a refund in progress. Sharing is disabled until the refund completes.",
+      );
     }
 
     await conn.query(

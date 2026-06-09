@@ -28,8 +28,15 @@ import {
   type MomoOperator,
 } from "./paychangu.service.js";
 import { makeReference } from "../utils/http.js";
+import {
+  computeReferralPricing,
+  recordReferralEarning,
+  resolveActiveReferral,
+} from "./referral.service.js";
 
-const SERVICE_FEE = 0;
+function platformServiceFee(): number {
+  return env.platformServiceFeeMwk;
+}
 
 export type CheckoutInput = {
   qty: number;
@@ -41,6 +48,7 @@ export type CheckoutInput = {
   contactPhone: string;
   nationalId?: string;
   queueId?: string;
+  referralCode?: string;
 };
 
 function makeChargeId(ledgerId: string): string {
@@ -51,20 +59,60 @@ function makeQrToken(): string {
   return uuid().replace(/-/g, "");
 }
 
-function pricingForCheckout(lineCount: number, unitPrice: number) {
+async function pricingForCheckout(
+  lineCount: number,
+  unitPrice: number,
+  listingId: string,
+  referralCode?: string,
+) {
   const catalogSubtotal = unitPrice * lineCount;
-  const catalogServiceFee = SERVICE_FEE;
+  const catalogServiceFee = platformServiceFee();
+
+  const referral = await resolveActiveReferral(listingId, referralCode);
+  if (referral) {
+    const applied = computeReferralPricing({
+      catalogSubtotal,
+      serviceFee: catalogServiceFee,
+      referral,
+    });
+    if (env.paychangu.mock) {
+      const mockTotal = env.paychangu.mockPaymentAmountMwk;
+      return {
+        subtotal: applied.organizerSubtotal,
+        serviceFee: catalogServiceFee,
+        total: mockTotal,
+        catalogSubtotal,
+        catalogServiceFee,
+        catalogTotal: applied.buyerSubtotal + catalogServiceFee,
+        referral: applied,
+        referrerUserId: referral.referrerUserId,
+      };
+    }
+    return {
+      subtotal: applied.organizerSubtotal,
+      serviceFee: applied.serviceFee,
+      total: applied.total,
+      catalogSubtotal,
+      catalogServiceFee,
+      catalogTotal: applied.buyerSubtotal + catalogServiceFee,
+      referral: applied,
+      referrerUserId: referral.referrerUserId,
+    };
+  }
+
   const catalogTotal = catalogSubtotal + catalogServiceFee;
 
   if (env.paychangu.mock) {
     const mockTotal = env.paychangu.mockPaymentAmountMwk;
     return {
       subtotal: mockTotal,
-      serviceFee: 0,
+      serviceFee: catalogServiceFee,
       total: mockTotal,
       catalogSubtotal,
       catalogServiceFee,
       catalogTotal,
+      referral: null,
+      referrerUserId: null,
     };
   }
 
@@ -75,6 +123,8 @@ function pricingForCheckout(lineCount: number, unitPrice: number) {
     catalogSubtotal,
     catalogServiceFee,
     catalogTotal,
+    referral: null,
+    referrerUserId: null,
   };
 }
 
@@ -183,7 +233,12 @@ async function createCheckoutWithPayChangu(
       ? input.seatNumbers.length
       : input.qty;
 
-  const pricing = pricingForCheckout(lineCount, listing.price);
+  const pricing = await pricingForCheckout(
+    lineCount,
+    listing.price,
+    listingId,
+    input.referralCode,
+  );
   const { subtotal, serviceFee, total } = pricing;
   const orderId = uuid();
   const ledgerId = uuid();
@@ -205,6 +260,12 @@ async function createCheckoutWithPayChangu(
     nationalId: input.nationalId ?? null,
     mockPayment: env.paychangu.mock,
     queueId: input.queueId ?? null,
+    referralId: pricing.referral?.referralId ?? null,
+    referralCode: pricing.referral?.referralCode ?? null,
+    referralDiscount: pricing.referral?.buyerDiscount ?? 0,
+    referrerCommission: pricing.referral?.referrerCommission ?? 0,
+    referrerUserId: pricing.referrerUserId ?? null,
+    catalogSubtotal: pricing.catalogSubtotal,
   };
 
   if (listing.kind === "travel" && input.seatNumbers?.length) {
@@ -253,10 +314,12 @@ async function createCheckoutWithPayChangu(
     await conn.query(
       `INSERT INTO orders (
         id, user_id, listing_id, reference, status, subtotal_mwk, service_fee_mwk, total_mwk,
-        payment_method, payment_phone, contact_name, contact_email, contact_phone, national_id
+        payment_method, payment_phone, contact_name, contact_email, contact_phone, national_id,
+        referral_id, referral_code, catalog_subtotal_mwk, referral_discount_mwk, referrer_commission_mwk
       ) VALUES (
         :orderId, :userId, :listingId, :reference, 'pending', :subtotal, :serviceFee, :total,
-        :paymentMethod, :paymentPhone, :contactName, :contactEmail, :contactPhone, :nationalId
+        :paymentMethod, :paymentPhone, :contactName, :contactEmail, :contactPhone, :nationalId,
+        :referralId, :referralCode, :catalogSubtotal, :referralDiscount, :referrerCommission
       )`,
       {
         orderId,
@@ -272,6 +335,11 @@ async function createCheckoutWithPayChangu(
         contactEmail: input.contactEmail,
         contactPhone: input.contactPhone,
         nationalId: input.nationalId ?? null,
+        referralId: pricing.referral?.referralId ?? null,
+        referralCode: pricing.referral?.referralCode ?? null,
+        catalogSubtotal: pricing.catalogSubtotal,
+        referralDiscount: pricing.referral?.buyerDiscount ?? 0,
+        referrerCommission: pricing.referral?.referrerCommission ?? 0,
       } satisfies QueryParams,
     );
 
@@ -486,7 +554,7 @@ async function fulfillCheckout(ledger: LedgerRow) {
 
     const unitPrice = listing.price;
     const catalogSubtotal = Number(meta.subtotal ?? unitPrice * lineCount);
-    const catalogServiceFee = Number(meta.serviceFee ?? SERVICE_FEE);
+    const catalogServiceFee = Number(meta.serviceFee ?? platformServiceFee());
     const catalogTotal = Number(meta.catalogTotal ?? catalogSubtotal + catalogServiceFee);
     const subtotal = catalogSubtotal;
     const ticketIds: string[] = [];
@@ -598,6 +666,22 @@ async function fulfillCheckout(ledger: LedgerRow) {
     void syncOrganizerRefundRecovery(listing.organizerId).catch((err) => {
       console.error("[refund-recovery] Post-checkout sync failed:", err);
     });
+
+    const metaReferral = parseCheckoutMeta(ledger);
+    const referralId = metaReferral.referralId as string | undefined;
+    const referrerUserId = metaReferral.referrerUserId as string | undefined;
+    const referrerCommission = Number(metaReferral.referrerCommission ?? 0);
+    if (referralId && referrerUserId && referrerCommission > 0) {
+      void recordReferralEarning({
+        referralId,
+        orderId: ledger.order_id,
+        referrerUserId,
+        listingId,
+        commissionMwk: referrerCommission,
+        buyerDiscountMwk: Number(metaReferral.referralDiscount ?? 0),
+        catalogSubtotalMwk: Number(metaReferral.catalogSubtotal ?? metaReferral.subtotal ?? 0),
+      }).catch((err) => console.error("[referral] Earning record failed:", err));
+    }
 
     return ticketIds;
   } catch (err) {

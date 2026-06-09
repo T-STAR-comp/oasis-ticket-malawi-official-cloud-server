@@ -12,6 +12,7 @@ import {
   assertUploadRateLimit,
   processAndStoreListingImage,
 } from "../services/image-upload.service.js";
+import * as referralService from "../services/referral.service.js";
 import { fail, ok } from "../utils/http.js";
 
 export const organizerRouter = Router();
@@ -477,6 +478,87 @@ organizerRouter.post("/verify/by-qr", async (req, res, next) => {
     if (err instanceof Error && err.message.length < 240) {
       return fail(res, err.message, 400);
     }
+    next(err);
+  }
+});
+
+organizerRouter.get("/referrals", async (req, res, next) => {
+  try {
+    const user = (req as AuthedRequest).user!;
+    const referrals = await referralService.listOrganizerReferrals(user.id);
+    const origin = `${req.protocol}://${req.get("host")}`;
+    return ok(
+      res,
+      referrals.map((r) => ({
+        ...r,
+        link: referralService.buildReferralLink(r.listingId, r.code, origin),
+      })),
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
+organizerRouter.get("/referrals/users/search", async (req, res, next) => {
+  try {
+    const email = String(req.query.email ?? "").trim();
+    if (!email || !email.includes("@")) return ok(res, null);
+    const found = await referralService.searchReferrerByEmail(email);
+    return ok(res, found);
+  } catch (err) {
+    next(err);
+  }
+});
+
+organizerRouter.post("/referrals", async (req, res, next) => {
+  try {
+    const user = (req as AuthedRequest).user!;
+    const body = z
+      .object({
+        listingId: z.string().min(1),
+        name: z.string().min(2).max(64),
+        type: z.enum(["split_both", "split_referrer", "discount_only"]),
+        cutPercent: z.number().int().min(1).max(50),
+        referrerUserId: z.string().uuid().optional(),
+      })
+      .parse(req.body);
+    const referral = await referralService.createReferral(user.id, body);
+    const origin = `${req.protocol}://${req.get("host")}`;
+    return ok(
+      res,
+      { ...referral, link: referralService.buildReferralLink(referral.listingId, referral.code, origin) },
+      201,
+    );
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid referral data", 400);
+    if (err instanceof Error) return fail(res, err.message, 400);
+    next(err);
+  }
+});
+
+organizerRouter.patch("/referrals/:id/status", async (req, res, next) => {
+  try {
+    const user = (req as AuthedRequest).user!;
+    const body = z.object({ status: z.enum(["active", "inactive"]) }).parse(req.body);
+    const referral = await referralService.setReferralStatus(
+      user.id,
+      String(req.params.id),
+      body.status,
+    );
+    return ok(res, referral);
+  } catch (err) {
+    if (err instanceof Error) return fail(res, err.message, 400);
+    next(err);
+  }
+});
+
+organizerRouter.delete("/referrals/:id", async (req, res, next) => {
+  try {
+    const user = (req as AuthedRequest).user!;
+    const result = await referralService.deleteReferral(user.id, String(req.params.id));
+    return ok(res, result);
+  } catch (err) {
+    if (err instanceof Error) return fail(res, err.message, 400);
     next(err);
   }
 });

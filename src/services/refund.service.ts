@@ -3,6 +3,10 @@ import { v4 as uuid } from "uuid";
 import { pool } from "../db/pool.js";
 import * as emailService from "./email.service.js";
 import { addOrganizerRefundDebt } from "./refund-recovery.service.js";
+import {
+  executeCustomerRefundPayment,
+  refundPaymentMethodLabel,
+} from "./refund-payment.service.js";
 
 const PAYMENT_COMPLETED_AT = `COALESCE(pl.completed_at, o.updated_at, o.created_at)`;
 
@@ -25,7 +29,7 @@ async function fetchRefundableTickets(filters: {
   let sql = `
     SELECT ut.id AS ticket_id, ut.user_id, ut.order_id, ut.amount_paid, ut.reference,
            u.email, u.full_name,
-           o.service_fee_mwk, o.subtotal_mwk, o.total_mwk,
+           o.service_fee_mwk, o.subtotal_mwk, o.total_mwk, o.payment_method,
            l.title AS listing_title, l.kind AS listing_kind, l.date_label, l.time_label,
            ${PAYMENT_COMPLETED_AT} AS payment_completed_at
      FROM user_tickets ut
@@ -111,6 +115,46 @@ async function processRefunds(
       continue;
     }
 
+    let paymentSent = false;
+    let paymentError: string | null = null;
+    try {
+      await executeCustomerRefundPayment({
+        orderId: String(ticket.order_id),
+        refundId,
+        refundAmount,
+      });
+      paymentSent = true;
+    } catch (err) {
+      paymentError = err instanceof Error ? err.message : "Refund payment failed";
+      console.error("[refund] payment failed:", paymentError, ticket.order_id);
+    }
+
+    if (!paymentSent) {
+      await pool.query(
+        `INSERT INTO ticket_refunds (
+          id, user_id, user_ticket_id, order_id, organizer_id,
+          original_amount, refund_amount, processing_fee, platform_fee, status, skip_reason
+        ) VALUES (
+          :id, :userId, :ticketId, :orderId, :organizerId,
+          :original, :refund, :procFee, :platFee, 'pending', :skipReason
+        )`,
+        {
+          id: refundId,
+          userId: ticket.user_id,
+          ticketId: ticket.ticket_id,
+          orderId: ticket.order_id,
+          organizerId,
+          original: amountPaid,
+          refund: refundAmount,
+          procFee: processingFee,
+          platFee: platformFee,
+          skipReason: paymentError ?? "Refund payment could not be sent",
+        },
+      );
+      skipped++;
+      continue;
+    }
+
     await pool.query(
       `INSERT INTO ticket_refunds (
         id, user_id, user_ticket_id, order_id, organizer_id,
@@ -149,6 +193,7 @@ async function processRefunds(
       refundAmount,
       amountPaid,
       context,
+      refundPaymentMethodLabel(String(ticket.payment_method ?? "")),
     );
 
     completed++;

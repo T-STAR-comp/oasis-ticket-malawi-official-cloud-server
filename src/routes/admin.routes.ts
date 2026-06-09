@@ -4,6 +4,7 @@ import * as adminService from "../services/admin.service.js";
 import * as adminStatisticsService from "../services/admin-statistics.service.js";
 import * as moderationService from "../services/moderation.service.js";
 import * as financeService from "../services/finance.service.js";
+import * as careersService from "../services/careers.service.js";
 import { requireAuth, requireRole, signToken, type AuthedRequest } from "../middleware/auth.js";
 import { fail, ok } from "../utils/http.js";
 
@@ -217,6 +218,112 @@ adminRouter.get("/partner-applications/:id", async (req, res, next) => {
     if (!app) return fail(res, "Application not found", 404);
     return ok(res, app);
   } catch (err) {
+    next(err);
+  }
+});
+
+const applicationFieldSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  type: z.enum(["text", "email", "tel", "url", "textarea"]).optional(),
+  required: z.boolean().optional(),
+  placeholder: z.string().optional(),
+});
+
+const jobPostBodySchema = z.object({
+  title: z.string().min(2),
+  description: z.string().min(10),
+  applyEmail: z.string().email(),
+  department: z.string().optional(),
+  location: z.string().optional(),
+  employmentType: z.enum(["full_time", "part_time", "contract", "internship", "other"]).optional(),
+  requirements: z.string().optional(),
+  benefits: z.string().optional(),
+  applicationFields: z.array(applicationFieldSchema).optional(),
+  status: z.enum(["draft", "published", "closed"]).optional(),
+  closesAt: z.string().nullable().optional(),
+});
+
+adminRouter.get("/job-posts", async (_req, res, next) => {
+  try {
+    return ok(res, await careersService.listAllJobs());
+  } catch (err) {
+    next(err);
+  }
+});
+
+adminRouter.get("/job-posts/:id", async (req, res, next) => {
+  try {
+    const job = await careersService.getJob(req.params.id);
+    if (!job) return fail(res, "Job post not found", 404);
+    return ok(res, job);
+  } catch (err) {
+    next(err);
+  }
+});
+
+function normalizeApplicationFields(
+  fields: z.infer<typeof jobPostBodySchema>["applicationFields"],
+): careersService.ApplicationField[] | undefined {
+  return fields?.map((f) => ({
+    id: f.id,
+    label: f.label,
+    type: f.type ?? "text",
+    required: f.required ?? false,
+    placeholder: f.placeholder,
+  }));
+}
+
+function normalizeJobBody(body: z.infer<typeof jobPostBodySchema>): careersService.JobPostInput {
+  return {
+    ...body,
+    applicationFields: normalizeApplicationFields(body.applicationFields),
+  };
+}
+
+function normalizePartialJobBody(
+  body: Partial<z.infer<typeof jobPostBodySchema>>,
+): Partial<careersService.JobPostInput> {
+  return {
+    ...body,
+    applicationFields: normalizeApplicationFields(body.applicationFields),
+  };
+}
+
+adminRouter.post("/job-posts", async (req, res, next) => {
+  try {
+    const admin = (req as AuthedRequest).user!;
+    const body = normalizeJobBody(jobPostBodySchema.parse(req.body));
+    const job = await careersService.createJob(admin.id, body);
+    return ok(res, job, 201);
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid job post", 400);
+    next(err);
+  }
+});
+
+adminRouter.patch("/job-posts/:id", async (req, res, next) => {
+  try {
+    const body = normalizePartialJobBody(jobPostBodySchema.partial().parse(req.body));
+    const job = await careersService.updateJob(req.params.id, body);
+    return ok(res, job);
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid job post", 400);
+    if (err instanceof Error && err.message === "Job post not found") {
+      return fail(res, err.message, 404);
+    }
+    next(err);
+  }
+});
+
+adminRouter.delete("/job-posts/:id", async (req, res, next) => {
+  try {
+    const result = await careersService.deleteJob(req.params.id);
+    return ok(res, result);
+  } catch (err) {
+    if (err instanceof Error && err.message === "Job post not found") {
+      return fail(res, err.message, 404);
+    }
     next(err);
   }
 });

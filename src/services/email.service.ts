@@ -440,6 +440,7 @@ export async function sendTicketRefundEmail(
   refundAmount: number,
   originalAmount: number,
   context: "ban" | "listing_cancellation" = "ban",
+  paymentMethodLabel = "your original payment method",
 ) {
   const reasonLine =
     context === "listing_cancellation"
@@ -451,7 +452,7 @@ export async function sendTicketRefundEmail(
     wrapHtml(
       "Refund issued",
       `<p>Hi ${fullName},</p>
-       <p>A <strong>90% refund</strong> of <strong>MK ${refundAmount.toLocaleString()}</strong> has been processed for ticket <strong>${reference}</strong> (original MK ${originalAmount.toLocaleString()}).</p>
+       <p>A <strong>90% refund</strong> of <strong>MK ${refundAmount.toLocaleString()}</strong> has been sent to <strong>${paymentMethodLabel}</strong> for ticket <strong>${reference}</strong> (original MK ${originalAmount.toLocaleString()}).</p>
        <p>A 10% retention covers payment processing and Ticket Malawi's convenience fee per our policy ${reasonLine}.</p>`,
     ),
   );
@@ -472,8 +473,8 @@ export async function sendListingCancelledBuyerPendingRefundEmail(input: {
       "Listing cancelled",
       `<p>Hi ${input.fullName},</p>
        <p><strong>${input.listingTitle}</strong> has been cancelled by the organizer. Your ticket <strong>${input.reference}</strong> is no longer valid.</p>
-       <p>A <strong>90% refund</strong> of <strong>MK ${input.expectedRefund.toLocaleString()}</strong> (from MK ${input.amountPaid.toLocaleString()} paid) will be processed once T+1 settlement completes for your payment.</p>
-       <p>The remaining 10% covers payment processing and Ticket Malawi's convenience fee. We will email you when the refund is issued.</p>`,
+       <p>A <strong>90% refund</strong> of <strong>MK ${input.expectedRefund.toLocaleString()}</strong> (from MK ${input.amountPaid.toLocaleString()} paid) will be sent to your original payment method once T+1 settlement completes for your payment.</p>
+       <p>The remaining 10% covers payment processing and Ticket Malawi's convenience fee. We will email you when the refund is issued. Ticket sharing is disabled while a refund is in progress.</p>`,
     ),
   );
 }

@@ -65,6 +65,12 @@ export const env = {
     tnmOperatorRef:
       process.env.PAYCHANGU_TNM_OPERATOR_REF ?? "27494cb5-ba9e-437f-a114-4e7a7686bcca",
   },
+  /** Serve the React build from public/ (same origin as /api). */
+  serveFrontend: process.env.SERVE_FRONTEND === "true" || process.env.NODE_ENV === "production",
+  platformServiceFeeMwk: Number(process.env.PLATFORM_SERVICE_FEE_MWK ?? 500),
+  referrals: {
+    payoutFeePercent: Number(process.env.REFERRAL_PAYOUT_FEE_PERCENT ?? 2),
+  },
   images: {
     /** Absolute or server-relative path to image-bucket-folder (sibling of app on cPanel). */
     bucketDir:

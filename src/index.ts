@@ -20,7 +20,8 @@ async function start() {
   const app = createApp();
 
   app.listen(env.port, () => {
-    console.log(`Ticket Malawi API running on http://localhost:${env.port}`);
+    const mode = env.serveFrontend ? "API + React SPA" : "API only";
+    console.log(`Ticket Malawi (${mode}) on http://localhost:${env.port}`);
     console.log(`CORS origins: ${env.corsOrigins.join(", ")}`);
     startPaymentPoller();
     startReminderPoller();

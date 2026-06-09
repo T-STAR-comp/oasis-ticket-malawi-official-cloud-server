@@ -7,6 +7,9 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "build": "tsc",
+    "build:frontend": "npm run build --prefix ../ticket-malawi-app",
+    "build:all": "npm run build:frontend && npm run build",
+    "start:prod": "node dist/index.js",
     "db:schema": "node scripts/run-sql.js database/schema.sql",
     "db:seed": "node scripts/run-sql.js database/seed.sql && node scripts/seed-users.js",
     "db:migrate": "node scripts/run-sql.js database/migration-v2-admin-email.sql",
@@ -18,7 +21,9 @@
     "db:migrate:capacity": "node scripts/run-sql.js database/migration-v8-capacity-queue.sql",
     "db:migrate:moderation": "node scripts/run-sql.js database/migration-v9-moderation.sql",
     "db:migrate:terms": "node scripts/run-sql.js database/migration-v10-terms-acceptance.sql",
-    "db:migrate:refund-debt": "node scripts/run-sql.js database/migration-v11-organizer-refund-debt.sql"
+    "db:migrate:refund-debt": "node scripts/run-sql.js database/migration-v11-organizer-refund-debt.sql",
+    "db:migrate:referrals": "node scripts/run-sql.js database/migration-v12-referrals.sql",
+    "db:migrate:careers": "node scripts/run-sql.js database/migration-v13-careers.sql"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

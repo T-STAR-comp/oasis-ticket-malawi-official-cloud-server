@@ -319,3 +319,80 @@ export async function verifyMobileMoneyCharge(
 
   return result;
 }
+
+/** Refund a card charge back to the customer's card (same payment method). */
+export async function refundCardCharge(chargeId: string): Promise<Record<string, unknown>> {
+  if (env.paychangu.mock) {
+    console.log("[paychangu] mock card refund", chargeId);
+    return { mock: true, chargeId };
+  }
+
+  const res = await fetch(
+    `${env.paychangu.baseUrl}/charge-card/refund/${encodeURIComponent(chargeId)}`,
+    { method: "POST", headers: authHeaders() },
+  );
+  const body = await parseJsonResponse(res);
+  const topStatus = String(body.status ?? "").toLowerCase();
+  if (!res.ok || topStatus === "failed") {
+    throw new PayChanguError(
+      formatPayChanguError(body, "Card refund failed"),
+      res.status,
+      body,
+    );
+  }
+  return body;
+}
+
+/** Send a mobile-money refund to the number used at checkout (Airtel / TNM). */
+export async function initiateMobileMoneyRefund(input: {
+  refundChargeId: string;
+  amount: number;
+  mobile: string;
+  operator: MomoOperator;
+}): Promise<PayChanguInitResult> {
+  if (env.paychangu.mock) {
+    console.log("[paychangu] mock momo refund", input.refundChargeId, input.amount, input.mobile);
+    return {
+      chargeId: input.refundChargeId,
+      transId: `mock-ref-${input.refundChargeId}`,
+      refId: `MOCK-REF-${Date.now()}`,
+      providerStatus: "success",
+      raw: { mock: true },
+    };
+  }
+
+  const payload = {
+    mobile: normalizeMobile(input.mobile),
+    mobile_money_operator_ref_id: operatorRef(input.operator),
+    amount: String(input.amount),
+    charge_id: input.refundChargeId,
+  };
+
+  console.log("[paychangu] momo refund", input.refundChargeId, payload.mobile, payload.amount);
+
+  const res = await fetch(`${env.paychangu.baseUrl}/mobile-money/payouts/initialize`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+
+  const body = await parseJsonResponse(res);
+  const topStatus = String(body.status ?? "").toLowerCase();
+  if (!res.ok || topStatus === "failed") {
+    throw new PayChanguError(
+      formatPayChanguError(body, "Mobile money refund failed"),
+      res.status,
+      body,
+    );
+  }
+
+  const data = (body.data ?? {}) as Record<string, unknown>;
+  const chargeId = data.charge_id ? String(data.charge_id) : input.refundChargeId;
+  return {
+    chargeId,
+    transId: data.trans_id ? String(data.trans_id) : null,
+    refId: data.ref_id ? String(data.ref_id) : null,
+    providerStatus: String(data.status ?? topStatus ?? "pending"),
+    raw: body,
+  };
+}

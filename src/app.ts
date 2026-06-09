@@ -15,8 +15,11 @@ import { partnerRouter } from "./routes/partner.routes.js";
 import { adminRouter } from "./routes/admin.routes.js";
 import { reportsRouter } from "./routes/reports.routes.js";
 import { verifyRouter } from "./routes/verify.routes.js";
+import { referrerRouter } from "./routes/referrer.routes.js";
+import { careersRouter } from "./routes/careers.routes.js";
 import { pool } from "./db/pool.js";
 import { LEGAL_VERSION } from "./config/legal.js";
+import { registerFrontend } from "./middleware/serveFrontend.js";
 
 export function createApp() {
   const app = express();
@@ -55,6 +58,8 @@ export function createApp() {
       data: {
         paychanguMock: env.paychangu.mock,
         mockPaymentAmountMwk: env.paychangu.mock ? env.paychangu.mockPaymentAmountMwk : null,
+        platformServiceFeeMwk: env.platformServiceFeeMwk,
+        referralPayoutFeePercent: env.referrals.payoutFeePercent,
       },
     });
   });
@@ -77,6 +82,10 @@ export function createApp() {
   app.use("/api/partner-applications", partnerRouter);
   app.use("/api/admin", adminRouter);
   app.use("/api/reports", reportsRouter);
+  app.use("/api/referrer", referrerRouter);
+  app.use("/api/careers", careersRouter);
+
+  registerFrontend(app, env.serveFrontend);
 
   app.use(errorHandler);
 
