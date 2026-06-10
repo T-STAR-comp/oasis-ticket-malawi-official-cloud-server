@@ -15,7 +15,8 @@ import {
   isPurchasableStatus,
   syncListingSoldOutStatus,
 } from "./capacity.service.js";
-import { getListingById } from "./listings.service.js";
+import { assertListingEventDateActive, getListingById } from "./listings.service.js";
+import * as ticketTiersService from "./ticket-tiers.service.js";
 import { syncOrganizerRefundRecovery } from "./refund-recovery.service.js";
 import {
   assertQueueCheckoutAllowed,
@@ -41,6 +42,7 @@ function platformServiceFee(): number {
 export type CheckoutInput = {
   qty: number;
   seatNumbers?: number[];
+  tierId?: string;
   paymentMethod: "airtel" | "tnm" | "card";
   paymentPhone?: string;
   contactName: string;
@@ -185,6 +187,22 @@ export async function initiateCheckout(
       ? input.seatNumbers.length
       : input.qty;
 
+  let unitPrice = Number(listing.price);
+  let selectedTier: ticketTiersService.TicketTierRow | null = null;
+  if (listing.kind === "event") {
+    await assertListingEventDateActive(listingId);
+    const tiers = (listing as { ticketTiers?: ticketTiersService.TicketTierRow[] }).ticketTiers ?? [];
+    if (tiers.length > 0) {
+      if (!input.tierId) {
+        throw new Error("Select a ticket type (Standard, VIP, etc.) to continue.");
+      }
+      selectedTier = await ticketTiersService.resolveTier(listingId, input.tierId);
+      if (!selectedTier) throw new Error("Ticket type not found");
+      await ticketTiersService.assertTierCheckoutCapacity(selectedTier.id, lineCount);
+      unitPrice = selectedTier.priceMwk;
+    }
+  }
+
   await assertCheckoutCapacity(
     listingId,
     listing.kind,
@@ -214,7 +232,15 @@ export async function initiateCheckout(
       return resumePendingCheckout(userId, existingPending, listing.title);
     }
 
-    return await createCheckoutWithPayChangu(userId, listingId, listing, input, conn);
+    return await createCheckoutWithPayChangu(
+      userId,
+      listingId,
+      listing,
+      input,
+      conn,
+      unitPrice,
+      selectedTier,
+    );
   } finally {
     await conn.query(`SELECT RELEASE_LOCK(:lockKey)`, { lockKey });
     conn.release();
@@ -227,6 +253,8 @@ async function createCheckoutWithPayChangu(
   listing: NonNullable<Awaited<ReturnType<typeof getListingById>>>,
   input: CheckoutInput,
   conn: Awaited<ReturnType<typeof pool.getConnection>>,
+  unitPrice: number,
+  selectedTier: ticketTiersService.TicketTierRow | null,
 ) {
   const lineCount =
     listing.kind === "travel" && input.seatNumbers?.length
@@ -235,7 +263,7 @@ async function createCheckoutWithPayChangu(
 
   const pricing = await pricingForCheckout(
     lineCount,
-    listing.price,
+    unitPrice,
     listingId,
     input.referralCode,
   );
@@ -266,6 +294,9 @@ async function createCheckoutWithPayChangu(
     referrerCommission: pricing.referral?.referrerCommission ?? 0,
     referrerUserId: pricing.referrerUserId ?? null,
     catalogSubtotal: pricing.catalogSubtotal,
+    tierId: selectedTier?.id ?? null,
+    tierName: selectedTier?.name ?? null,
+    unitPrice,
   };
 
   if (listing.kind === "travel" && input.seatNumbers?.length) {
@@ -552,7 +583,9 @@ async function fulfillCheckout(ledger: LedgerRow) {
     const listing = await getListingById(listingId, true);
     if (!listing) throw new Error("Listing not found");
 
-    const unitPrice = listing.price;
+    const unitPrice = Number(meta.unitPrice ?? listing.price);
+    const tierId = (meta.tierId as string | null) ?? null;
+    const tierName = (meta.tierName as string | null) ?? null;
     const catalogSubtotal = Number(meta.subtotal ?? unitPrice * lineCount);
     const catalogServiceFee = Number(meta.serviceFee ?? platformServiceFee());
     const catalogTotal = Number(meta.catalogTotal ?? catalogSubtotal + catalogServiceFee);
@@ -605,14 +638,15 @@ async function fulfillCheckout(ledger: LedgerRow) {
     } else {
       const itemId = uuid();
       await conn.query(
-        `INSERT INTO order_items (id, order_id, quantity, unit_price, line_total)
-         VALUES (:itemId, :orderId, :qty, :unitPrice, :lineTotal)`,
+        `INSERT INTO order_items (id, order_id, quantity, unit_price, line_total, ticket_tier_id)
+         VALUES (:itemId, :orderId, :qty, :unitPrice, :lineTotal, :tierId)`,
         {
           itemId,
           orderId: ledger.order_id,
           qty: lineCount,
           unitPrice,
           lineTotal: subtotal,
+          tierId,
         },
       );
 
@@ -627,13 +661,20 @@ async function fulfillCheckout(ledger: LedgerRow) {
             ? catalogTotal - perTicketAmount * (lineCount - 1)
             : perTicketAmount;
         await conn.query(
-          `INSERT INTO user_tickets (id, user_id, order_id, listing_id, reference, qr_token, status, amount_paid)
-           VALUES (:id, :userId, :orderId, :listingId, :reference, :qrToken, 'active', :amount)`,
+          `INSERT INTO user_tickets (
+             id, user_id, order_id, listing_id, ticket_tier_id, ticket_tier_name,
+             reference, qr_token, status, amount_paid
+           ) VALUES (
+             :id, :userId, :orderId, :listingId, :tierId, :tierName,
+             :reference, :qrToken, 'active', :amount
+           )`,
           {
             id: ticketId,
             userId: ledger.user_id,
             orderId: ledger.order_id,
             listingId,
+            tierId,
+            tierName,
             reference: order.reference,
             qrToken,
             amount,

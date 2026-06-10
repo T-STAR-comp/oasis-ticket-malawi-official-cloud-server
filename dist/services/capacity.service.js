@@ -2,7 +2,7 @@ import { pool } from "../db/pool.js";
 const PUBLIC_STATUSES = ["published", "sold_out", "cancelled", "postponed"];
 /**
  * Published listings are always publicly browsable (including after capacity increases).
- * Sold out, cancelled, and postponed stay visible until the day after event_starts_on.
+ * Sold out, cancelled, and postponed stay visible through the event day.
  */
 export const ORGANIZER_PUBLIC_SQL = `
   organizer_id IN (
@@ -14,7 +14,7 @@ export const PUBLIC_VISIBILITY_SQL = `
     status = 'published'
     OR (
       status IN ('sold_out', 'cancelled', 'postponed')
-      AND (event_starts_on IS NULL OR event_starts_on >= DATE_SUB(CURDATE(), INTERVAL 1 DAY))
+      AND (event_starts_on IS NULL OR event_starts_on >= CURDATE())
     )
   )
   AND ${ORGANIZER_PUBLIC_SQL}

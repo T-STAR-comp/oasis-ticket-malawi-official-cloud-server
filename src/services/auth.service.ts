@@ -10,18 +10,24 @@ function generateCode(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
-async function createVerificationCode(userId: string) {
+type VerificationPurpose = "signup" | "login";
+
+function normalizeOtpCode(raw: string): string {
+  return raw.replace(/\D/g, "").slice(0, 6);
+}
+
+async function createVerificationCode(userId: string, purpose: VerificationPurpose = "signup") {
   const code = generateCode();
   const id = uuid();
-  const expires = new Date(Date.now() + 15 * 60 * 1000);
   await pool.query(
-    `UPDATE email_verification_codes SET used_at = NOW() WHERE user_id = :userId AND used_at IS NULL`,
-    { userId },
+    `UPDATE email_verification_codes SET used_at = NOW()
+     WHERE user_id = :userId AND purpose = :purpose AND used_at IS NULL`,
+    { userId, purpose },
   );
   await pool.query(
     `INSERT INTO email_verification_codes (id, user_id, code, purpose, expires_at)
-     VALUES (:id, :userId, :code, 'signup', :expiresAt)`,
-    { id, userId, code, expiresAt: expires },
+     VALUES (:id, :userId, :code, :purpose, DATE_ADD(NOW(), INTERVAL 15 MINUTE))`,
+    { id, userId, code, purpose },
   );
   return code;
 }
@@ -72,7 +78,8 @@ export async function signUp(input: {
   };
 }
 
-export async function verifyEmail(email: string, code: string) {
+export async function verifyEmail(email: string, rawCode: string) {
+  const code = normalizeOtpCode(rawCode);
   const [users] = await pool.query<RowDataPacket[]>(
     `SELECT id, email, full_name, role, email_verified FROM users WHERE email = :email`,
     { email: email.toLowerCase() },
@@ -83,7 +90,7 @@ export async function verifyEmail(email: string, code: string) {
 
   const [codes] = await pool.query<RowDataPacket[]>(
     `SELECT id FROM email_verification_codes
-     WHERE user_id = :userId AND code = :code AND used_at IS NULL AND expires_at > NOW()
+     WHERE user_id = :userId AND TRIM(code) = :code AND used_at IS NULL AND expires_at > NOW()
      ORDER BY created_at DESC LIMIT 1`,
     { userId: user.id, code },
   );
@@ -121,7 +128,7 @@ export async function resendVerification(email: string) {
   return { sent: true };
 }
 
-export async function signIn(email: string, password: string): Promise<AuthUser | null> {
+async function validateSignInCredentials(email: string, password: string) {
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT id, email, password_hash, full_name, role, status, email_verified FROM users WHERE email = :email`,
     { email: email.toLowerCase() },
@@ -135,6 +142,77 @@ export async function signIn(email: string, password: string): Promise<AuthUser 
   }
   if (row.status === "inactive") throw new Error("Account inactive");
   if (!row.email_verified && row.role !== "admin") throw new Error("Email not verified");
+  return row;
+}
+
+export async function initiateSignIn(email: string, password: string) {
+  const row = await validateSignInCredentials(email, password);
+  if (!row) return null;
+
+  const code = await createVerificationCode(row.id as string, "login");
+  await emailService.sendLoginCode(
+    row.email as string,
+    row.full_name as string,
+    code,
+  );
+
+  const masked = String(row.email).replace(/(^.).*(@.*$)/, "$1***$2");
+  return {
+    requiresCode: true as const,
+    maskedEmail: masked,
+    message: `We sent a 6-digit security code to ${masked}.`,
+  };
+}
+
+export async function confirmSignIn(email: string, rawCode: string): Promise<AuthUser | null> {
+  const code = normalizeOtpCode(rawCode);
+  if (code.length !== 6) throw new Error("Invalid or expired security code");
+
+  const [users] = await pool.query<RowDataPacket[]>(
+    `SELECT id, email, full_name, role, status, email_verified FROM users WHERE email = :email`,
+    { email: email.toLowerCase() },
+  );
+  const user = users[0];
+  if (!user) return null;
+
+  // purpose = 'login' after migration; empty purpose if enum was not migrated yet.
+  const [codes] = await pool.query<RowDataPacket[]>(
+    `SELECT id FROM email_verification_codes
+     WHERE user_id = :userId
+       AND TRIM(code) = :code
+       AND used_at IS NULL
+       AND expires_at > NOW()
+       AND (
+         purpose = 'login'
+         OR purpose = ''
+         OR purpose NOT IN ('signup', 'password_reset', 'password_change')
+       )
+     ORDER BY created_at DESC LIMIT 1`,
+    { userId: user.id, code },
+  );
+  if (!codes[0]) throw new Error("Invalid or expired security code");
+
+  await pool.query(`UPDATE email_verification_codes SET used_at = NOW() WHERE id = :id`, {
+    id: codes[0].id,
+  });
+
+  if (user.status === "suspended" && user.role !== "organizer") {
+    throw new Error("Account suspended");
+  }
+  if (user.status === "inactive") throw new Error("Account inactive");
+
+  return {
+    id: user.id as string,
+    email: user.email as string,
+    fullName: user.full_name as string,
+    role: user.role as UserRole,
+  };
+}
+
+/** @deprecated Use initiateSignIn + confirmSignIn */
+export async function signIn(email: string, password: string): Promise<AuthUser | null> {
+  const row = await validateSignInCredentials(email, password);
+  if (!row) return null;
   return {
     id: row.id as string,
     email: row.email as string,

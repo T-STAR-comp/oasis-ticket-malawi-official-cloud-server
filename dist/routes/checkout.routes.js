@@ -10,6 +10,7 @@ import { fail, ok } from "../utils/http.js";
 const checkoutSchema = z.object({
     qty: z.number().int().min(1).max(20).default(1),
     seatNumbers: z.array(z.number().int().positive()).optional(),
+    tierId: z.string().uuid().optional(),
     paymentMethod: z.enum(["airtel", "tnm", "card"]),
     paymentPhone: z.string().optional(),
     contactName: z.string().min(2),

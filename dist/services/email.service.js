@@ -33,6 +33,12 @@ export async function sendEmail(to, subject, html) {
     await transport.sendMail({ from, to, subject, html });
     return { sent: true };
 }
+export async function sendLoginCode(email, fullName, code) {
+    return sendEmail(email, "Your Ticket Malawi sign-in code", wrapHtml("Sign-in security code", `<p>Hi ${fullName},</p>
+       <p>Someone is signing in to your Ticket Malawi account. Your security code is:</p>
+       <p style="font-size:32px;font-weight:700;letter-spacing:8px;color:#1e40af">${code}</p>
+       <p>This code expires in 15 minutes. If you did not try to sign in, change your password immediately.</p>`));
+}
 export async function sendVerificationCode(email, fullName, code) {
     return sendEmail(email, "Verify your Ticket Malawi account", wrapHtml("Verify your email", `<p>Hi ${fullName},</p>
        <p>Your verification code is:</p>

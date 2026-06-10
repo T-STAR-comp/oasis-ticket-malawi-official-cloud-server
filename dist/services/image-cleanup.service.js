@@ -1,10 +1,10 @@
 import { pool } from "../db/pool.js";
 import { isManagedImagePath } from "../config/images.js";
 import { deleteManagedImageFile } from "./image-upload.service.js";
-const PLACEHOLDER_IMAGE = "/assets/event-artsummit.jpg";
+/** Cleared in DB after purge — frontend renders a broken/missing image, not stock art. */
+export const PURGED_LISTING_IMAGE = "";
 /**
- * Delete listing cover images once the event/trip date has passed by one calendar day.
- * Matches ticket expiry policy.
+ * Delete listing cover images once the event/trip date has passed (day after event).
  */
 export async function purgeListingImagesPastEventDate() {
     const [rows] = await pool.query(`SELECT id, image_url
@@ -13,7 +13,7 @@ export async function purgeListingImagesPastEventDate() {
        AND image_url != ''
        AND image_url LIKE '%image-bucket-folder%'
        AND event_starts_on IS NOT NULL
-       AND event_starts_on < DATE_SUB(CURDATE(), INTERVAL 1 DAY)`);
+       AND event_starts_on < CURDATE()`);
     let deleted = 0;
     let cleared = 0;
     for (const row of rows) {
@@ -23,7 +23,7 @@ export async function purgeListingImagesPastEventDate() {
         const removed = await deleteManagedImageFile(imageUrl);
         if (removed)
             deleted++;
-        await pool.query(`UPDATE listings SET image_url = :placeholder WHERE id = :id`, { id: row.id, placeholder: PLACEHOLDER_IMAGE });
+        await pool.query(`UPDATE listings SET image_url = '' WHERE id = :id`, { id: row.id });
         cleared++;
     }
     return { listingsProcessed: rows.length, filesDeleted: deleted, dbCleared: cleared };

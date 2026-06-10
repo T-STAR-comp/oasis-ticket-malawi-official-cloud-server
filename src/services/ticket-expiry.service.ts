@@ -12,7 +12,7 @@ export async function expireTicketsPastEventDate() {
      SET ut.status = 'expired'
      WHERE ut.status = 'active'
        AND l.event_starts_on IS NOT NULL
-       AND l.event_starts_on < DATE_SUB(CURDATE(), INTERVAL 1 DAY)`,
+       AND l.event_starts_on < CURDATE()`,
   );
   return (result as { affectedRows?: number }).affectedRows ?? 0;
 }

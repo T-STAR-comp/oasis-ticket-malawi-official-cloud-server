@@ -61,16 +61,41 @@ authRouter.post("/resend-verification", async (req, res, next) => {
 authRouter.post("/signin", async (req, res, next) => {
     try {
         const body = signInSchema.parse(req.body);
-        const user = await authService.signIn(body.email, body.password);
-        if (!user)
+        const result = await authService.initiateSignIn(body.email, body.password);
+        if (!result)
             return fail(res, "Invalid email or password", 401);
-        const token = signToken(user);
-        return ok(res, { user, token });
+        return ok(res, result);
     }
     catch (err) {
         if (err instanceof Error) {
             if (err.message === "Email not verified")
                 return fail(res, err.message, 403);
+            if (err.message === "Account suspended")
+                return fail(res, err.message, 403);
+            if (err.message === "Account inactive")
+                return fail(res, err.message, 403);
+        }
+        if (err instanceof Error && err.message.includes("Data truncated")) {
+            return fail(res, "Login security codes are not enabled on the database yet. Run: npm run db:migrate:tiers", 503);
+        }
+        next(err);
+    }
+});
+authRouter.post("/signin/verify", async (req, res, next) => {
+    try {
+        const { email, code } = z
+            .object({ email: z.string().email(), code: z.string().length(6) })
+            .parse(req.body);
+        const user = await authService.confirmSignIn(email, code);
+        if (!user)
+            return fail(res, "Invalid email or security code", 401);
+        const token = signToken(user);
+        return ok(res, { user, token });
+    }
+    catch (err) {
+        if (err instanceof Error) {
+            if (err.message.includes("security code"))
+                return fail(res, err.message, 400);
             if (err.message === "Account suspended")
                 return fail(res, err.message, 403);
             if (err.message === "Account inactive")

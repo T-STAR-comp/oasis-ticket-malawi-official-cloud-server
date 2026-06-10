@@ -7,6 +7,8 @@ import * as refundService from "./refund.service.js";
 import { replaceListingImageIfManaged } from "./image-upload.service.js";
 import { isManagedImagePath } from "../config/images.js";
 import { assertOrganizerCanMutate, containsExplicitContent, getOrganizerModerationState, suspendOrganizerForContent, } from "./moderation.service.js";
+import { formatSqlDate, parseEventDateInput } from "../utils/dates.js";
+import * as ticketTiersService from "./ticket-tiers.service.js";
 function formatEventDateLabel(isoDate) {
     const d = new Date(`${isoDate.slice(0, 10)}T12:00:00`);
     return d.toLocaleDateString("en-GB", {
@@ -44,6 +46,37 @@ async function enrichOrganizerModeration(organizerId, listing) {
         organizerStatus: mod.status,
     };
 }
+async function attachTicketTiers(row, listing) {
+    if (row.kind !== "event")
+        return listing;
+    try {
+        const tiers = await ticketTiersService.listTiersForListing(row.id);
+        if (tiers.length > 0) {
+            return {
+                ...listing,
+                price: Math.min(...tiers.map((t) => t.priceMwk)),
+                ticketTiers: tiers,
+            };
+        }
+    }
+    catch {
+        // Table may not exist before migration
+    }
+    return listing;
+}
+export async function assertListingEventDateActive(listingId) {
+    const [rows] = await pool.query(`SELECT kind, event_starts_on FROM listings WHERE id = :listingId LIMIT 1`, { listingId });
+    const row = rows[0];
+    if (!row || row.kind !== "event")
+        return;
+    if (!row.event_starts_on) {
+        throw new Error("This event does not have a valid date.");
+    }
+    const [dateRows] = await pool.query(`SELECT (event_starts_on >= CURDATE()) AS isActive FROM listings WHERE id = :listingId`, { listingId });
+    if (!dateRows[0]?.isActive) {
+        throw new Error("This event has already passed and is no longer available.");
+    }
+}
 async function mapListing(row, seats) {
     const listing = {
         id: row.id,
@@ -52,9 +85,7 @@ async function mapListing(row, seats) {
         subtitle: row.subtitle,
         category: row.category,
         date: row.date_label,
-        eventStartsOn: row.event_starts_on
-            ? String(row.event_starts_on).slice(0, 10)
-            : undefined,
+        eventStartsOn: formatSqlDate(row.event_starts_on),
         time: row.time_label,
         location: row.location,
         price: row.price_mwk,
@@ -89,10 +120,12 @@ async function mapListing(row, seats) {
                 })),
             },
         });
-        return enrichOrganizerModeration(row.organizer_id, withCapacity);
+        const withTiers = await attachTicketTiers(row, withCapacity);
+        return enrichOrganizerModeration(row.organizer_id, withTiers);
     }
     const withCapacity = await enrichListingCapacity(row, listing);
-    return enrichOrganizerModeration(row.organizer_id, withCapacity);
+    const withTiers = await attachTicketTiers(row, withCapacity);
+    return enrichOrganizerModeration(row.organizer_id, withTiers);
 }
 export async function listPublished(kind) {
     let sql = `SELECT * FROM listings WHERE ${PUBLIC_VISIBILITY_SQL}`;
@@ -182,6 +215,22 @@ export async function upsertListing(organizerId, body) {
     if (parsedCapacity != null && soldCount < parsedCapacity && status === "sold_out") {
         status = "published";
     }
+    const eventStartsOn = parseEventDateInput(body.eventStartsOn ?? body.event_starts_on);
+    let dateLabel = String(body.date ?? body.dateLabel ?? "").trim();
+    if (kind === "event" && (status === "published" || status === "sold_out")) {
+        if (!eventStartsOn) {
+            throw new Error("Event date is required before publishing. Set the event / trip date field.");
+        }
+        const [dateRows] = await pool.query(`SELECT (:eventStartsOn >= CURDATE()) AS isValid`, { eventStartsOn });
+        if (!dateRows[0]?.isValid) {
+            throw new Error("Event date must be today or in the future.");
+        }
+        if (!dateLabel) {
+            dateLabel = formatEventDateLabel(eventStartsOn);
+        }
+    }
+    const rawTiers = body.ticketTiers;
+    const priceMwk = Number(body.price ?? 0);
     await pool.query(`INSERT INTO listings (
       id, organizer_id, kind, title, subtitle, category, date_label, event_starts_on, ticket_capacity,
       time_label, location,
@@ -208,12 +257,12 @@ export async function upsertListing(organizerId, body) {
         title: String(body.title ?? ""),
         subtitle: String(body.subtitle ?? ""),
         category: String(body.category ?? ""),
-        dateLabel: String(body.date ?? body.dateLabel ?? ""),
-        eventStartsOn: body.eventStartsOn ? String(body.eventStartsOn).slice(0, 10) : null,
+        dateLabel,
+        eventStartsOn,
         ticketCapacity: parsedCapacity,
         timeLabel: String(body.time ?? body.timeLabel ?? ""),
         location: String(body.location ?? ""),
-        priceMwk: Number(body.price ?? 0),
+        priceMwk,
         imageUrl: nextImageUrl,
         description: String(body.description ?? ""),
         operatorName: String(body.operator?.name ?? body.operatorName ?? ""),
@@ -231,6 +280,23 @@ export async function upsertListing(organizerId, body) {
             throw new Error("Travel listings require a seat layout with at least one seat");
         }
         await saveSeatLayout(id, layout);
+    }
+    else {
+        try {
+            const tiers = await ticketTiersService.saveTiersForListing(id, kind, rawTiers, priceMwk > 0 ? priceMwk : 1);
+            if (tiers.length > 0) {
+                const minPrice = Math.min(...tiers.map((t) => t.priceMwk));
+                await pool.query(`UPDATE listings SET price_mwk = :price WHERE id = :id`, {
+                    id,
+                    price: minPrice,
+                });
+            }
+        }
+        catch (err) {
+            if (!(err instanceof Error && err.message.includes("doesn't exist"))) {
+                throw err;
+            }
+        }
     }
     if (status === "published" || status === "sold_out") {
         await syncListingSoldOutStatus(id, kind, parsedCapacity);

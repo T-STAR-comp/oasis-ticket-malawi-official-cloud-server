@@ -3,7 +3,8 @@ import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
 import { getLedgerByOrderId, getUserPendingLedger, listExpiredPendingLedgers, parseCheckoutMeta, } from "./ledger.service.js";
 import { assertCheckoutCapacity, isPurchasableStatus, syncListingSoldOutStatus, } from "./capacity.service.js";
-import { getListingById } from "./listings.service.js";
+import { assertListingEventDateActive, getListingById } from "./listings.service.js";
+import * as ticketTiersService from "./ticket-tiers.service.js";
 import { syncOrganizerRefundRecovery } from "./refund-recovery.service.js";
 import { assertQueueCheckoutAllowed, completeQueueEntry, } from "./queue.service.js";
 import { initiateMobileMoneyCharge, TERMINAL_PAYMENT_STATUSES, verifyMobileMoneyCharge, } from "./paychangu.service.js";
@@ -120,6 +121,22 @@ export async function initiateCheckout(userId, listingId, input) {
     const lineCount = listing.kind === "travel" && input.seatNumbers?.length
         ? input.seatNumbers.length
         : input.qty;
+    let unitPrice = Number(listing.price);
+    let selectedTier = null;
+    if (listing.kind === "event") {
+        await assertListingEventDateActive(listingId);
+        const tiers = listing.ticketTiers ?? [];
+        if (tiers.length > 0) {
+            if (!input.tierId) {
+                throw new Error("Select a ticket type (Standard, VIP, etc.) to continue.");
+            }
+            selectedTier = await ticketTiersService.resolveTier(listingId, input.tierId);
+            if (!selectedTier)
+                throw new Error("Ticket type not found");
+            await ticketTiersService.assertTierCheckoutCapacity(selectedTier.id, lineCount);
+            unitPrice = selectedTier.priceMwk;
+        }
+    }
     await assertCheckoutCapacity(listingId, listing.kind, listing.ticketCapacity ?? null, lineCount);
     await assertQueueCheckoutAllowed(listingId, userId, input.queueId, listing.kind, listing.ticketCapacity ?? null);
     const lockKey = `checkout:${userId}`;
@@ -135,18 +152,18 @@ export async function initiateCheckout(userId, listingId, input) {
         if (existingPending) {
             return resumePendingCheckout(userId, existingPending, listing.title);
         }
-        return await createCheckoutWithPayChangu(userId, listingId, listing, input, conn);
+        return await createCheckoutWithPayChangu(userId, listingId, listing, input, conn, unitPrice, selectedTier);
     }
     finally {
         await conn.query(`SELECT RELEASE_LOCK(:lockKey)`, { lockKey });
         conn.release();
     }
 }
-async function createCheckoutWithPayChangu(userId, listingId, listing, input, conn) {
+async function createCheckoutWithPayChangu(userId, listingId, listing, input, conn, unitPrice, selectedTier) {
     const lineCount = listing.kind === "travel" && input.seatNumbers?.length
         ? input.seatNumbers.length
         : input.qty;
-    const pricing = await pricingForCheckout(lineCount, listing.price, listingId, input.referralCode);
+    const pricing = await pricingForCheckout(lineCount, unitPrice, listingId, input.referralCode);
     const { subtotal, serviceFee, total } = pricing;
     const orderId = uuid();
     const ledgerId = uuid();
@@ -173,6 +190,9 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
         referrerCommission: pricing.referral?.referrerCommission ?? 0,
         referrerUserId: pricing.referrerUserId ?? null,
         catalogSubtotal: pricing.catalogSubtotal,
+        tierId: selectedTier?.id ?? null,
+        tierName: selectedTier?.name ?? null,
+        unitPrice,
     };
     if (listing.kind === "travel" && input.seatNumbers?.length) {
         for (const num of input.seatNumbers) {
@@ -378,7 +398,9 @@ async function fulfillCheckout(ledger) {
         const listing = await getListingById(listingId, true);
         if (!listing)
             throw new Error("Listing not found");
-        const unitPrice = listing.price;
+        const unitPrice = Number(meta.unitPrice ?? listing.price);
+        const tierId = meta.tierId ?? null;
+        const tierName = meta.tierName ?? null;
         const catalogSubtotal = Number(meta.subtotal ?? unitPrice * lineCount);
         const catalogServiceFee = Number(meta.serviceFee ?? platformServiceFee());
         const catalogTotal = Number(meta.catalogTotal ?? catalogSubtotal + catalogServiceFee);
@@ -416,13 +438,14 @@ async function fulfillCheckout(ledger) {
         }
         else {
             const itemId = uuid();
-            await conn.query(`INSERT INTO order_items (id, order_id, quantity, unit_price, line_total)
-         VALUES (:itemId, :orderId, :qty, :unitPrice, :lineTotal)`, {
+            await conn.query(`INSERT INTO order_items (id, order_id, quantity, unit_price, line_total, ticket_tier_id)
+         VALUES (:itemId, :orderId, :qty, :unitPrice, :lineTotal, :tierId)`, {
                 itemId,
                 orderId: ledger.order_id,
                 qty: lineCount,
                 unitPrice,
                 lineTotal: subtotal,
+                tierId,
             });
             const perTicketAmount = Math.floor(catalogTotal / lineCount) +
                 (catalogTotal % lineCount > 0 ? 1 : 0);
@@ -432,12 +455,19 @@ async function fulfillCheckout(ledger) {
                 const amount = i === lineCount - 1
                     ? catalogTotal - perTicketAmount * (lineCount - 1)
                     : perTicketAmount;
-                await conn.query(`INSERT INTO user_tickets (id, user_id, order_id, listing_id, reference, qr_token, status, amount_paid)
-           VALUES (:id, :userId, :orderId, :listingId, :reference, :qrToken, 'active', :amount)`, {
+                await conn.query(`INSERT INTO user_tickets (
+             id, user_id, order_id, listing_id, ticket_tier_id, ticket_tier_name,
+             reference, qr_token, status, amount_paid
+           ) VALUES (
+             :id, :userId, :orderId, :listingId, :tierId, :tierName,
+             :reference, :qrToken, 'active', :amount
+           )`, {
                     id: ticketId,
                     userId: ledger.user_id,
                     orderId: ledger.order_id,
                     listingId,
+                    tierId,
+                    tierName,
                     reference: order.reference,
                     qrToken,
                     amount,

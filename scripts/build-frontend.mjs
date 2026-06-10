@@ -29,4 +29,11 @@ if (!appDir) {
 }
 
 console.log(`[build-frontend] Building ${appDir}`);
-execSync("npm run build", { cwd: appDir, stdio: "inherit" });
+const nodeOptions = [process.env.NODE_OPTIONS, "--max-old-space-size=8192"]
+  .filter(Boolean)
+  .join(" ");
+execSync("npm run build", {
+  cwd: appDir,
+  stdio: "inherit",
+  env: { ...process.env, NODE_OPTIONS: nodeOptions },
+});

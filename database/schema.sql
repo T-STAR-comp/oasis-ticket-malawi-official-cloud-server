@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS email_verification_codes (
   id         CHAR(36)     NOT NULL PRIMARY KEY,
   user_id    CHAR(36)     NOT NULL,
   code       CHAR(6)      NOT NULL,
-  purpose    ENUM('signup', 'password_reset', 'password_change') NOT NULL DEFAULT 'signup',
+  purpose    ENUM('signup', 'password_reset', 'password_change', 'login') NOT NULL DEFAULT 'signup',
   expires_at TIMESTAMP    NOT NULL,
   used_at    TIMESTAMP    NULL,
   created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,

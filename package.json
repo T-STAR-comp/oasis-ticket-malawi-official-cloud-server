@@ -25,7 +25,9 @@
     "db:migrate:terms": "node scripts/run-sql.js database/migration-v10-terms-acceptance.sql",
     "db:migrate:refund-debt": "node scripts/run-sql.js database/migration-v11-organizer-refund-debt.sql",
     "db:migrate:referrals": "node scripts/run-sql.js database/migration-v12-referrals.sql",
-    "db:migrate:careers": "node scripts/run-sql.js database/migration-v13-careers.sql"
+    "db:migrate:careers": "node scripts/run-sql.js database/migration-v13-careers.sql",
+    "db:migrate:tiers": "node scripts/run-sql.js database/migration-v14-ticket-tiers-login.sql",
+    "db:migrate:login": "node scripts/run-sql.js database/migration-v15-login-purpose.sql"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

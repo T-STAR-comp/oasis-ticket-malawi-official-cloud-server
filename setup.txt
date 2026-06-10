@@ -7,9 +7,15 @@ npm run dev
 SHIP TO PRODUCTION (before git push)
 ------------------------------------
 npm run ship
+(uses 8GB Node heap for frontend build — close other apps if OOM)
 
 This builds the main app into public/client/ and compiles dist/.
 Commit and push both folders with your code changes.
+
+DATABASE (after deploy)
+-----------------------
+npm run db:migrate:login
+npm run db:migrate:tiers
 
 CPANEL / SPACESHIP
 ------------------

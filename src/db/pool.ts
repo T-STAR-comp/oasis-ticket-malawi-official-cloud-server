@@ -10,6 +10,8 @@ export const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   namedPlaceholders: true,
+  dateStrings: true,
+  timezone: "+02:00",
 });
 
 export type Row = mysql.RowDataPacket;

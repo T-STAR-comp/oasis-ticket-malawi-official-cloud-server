@@ -18,7 +18,7 @@ export async function getUserTickets(userId: string, status?: "active" | "used" 
   let sql = `
     SELECT ut.*, l.title, l.category, l.date_label, l.time_label, l.kind, l.image_url,
            l.operator_name, l.location, l.organizer_id, l.status AS listing_status,
-           l.event_starts_on,
+           l.event_starts_on, ut.ticket_tier_name,
            op.status AS organizer_status, op.flagged_at, op.flag_reason,
            op.suspension_reason,
            EXISTS (
@@ -62,6 +62,7 @@ export async function getUserTickets(userId: string, status?: "active" | "used" 
     status: r.status,
     purchasedOn: r.purchased_at,
     seat: r.seat_number ? String(r.seat_number) : undefined,
+    ticketTierName: r.ticket_tier_name ? String(r.ticket_tier_name) : undefined,
     amountPaid: r.amount_paid,
     organizerRestricted,
     organizerFlagged: r.flagged_at != null,
