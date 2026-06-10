@@ -86,7 +86,11 @@ async function attachTicketTiers<T extends Record<string, unknown>>(
 ): Promise<T & { ticketTiers?: ticketTiersService.TicketTierRow[]; price: number }> {
   if (row.kind !== "event") return listing as T & { price: number };
   try {
-    const tiers = await ticketTiersService.listTiersForListing(row.id);
+    let tiers = await ticketTiersService.listTiersForListing(row.id);
+    if (tiers.length === 0) {
+      const fallbackPrice = Number(row.price_mwk) || Number(listing.price) || 1;
+      tiers = await ticketTiersService.ensureDefaultTierForListing(row.id, fallbackPrice);
+    }
     if (tiers.length > 0) {
       return {
         ...listing,
@@ -94,8 +98,11 @@ async function attachTicketTiers<T extends Record<string, unknown>>(
         ticketTiers: tiers,
       };
     }
-  } catch {
-    // Table may not exist before migration
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("doesn't exist")) {
+      return listing as T & { price: number };
+    }
+    throw err;
   }
   return listing as T & { price: number };
 }
@@ -387,9 +394,12 @@ export async function upsertListing(organizerId: string, body: Record<string, un
         });
       }
     } catch (err) {
-      if (!(err instanceof Error && err.message.includes("doesn't exist"))) {
-        throw err;
+      if (err instanceof Error && err.message.includes("doesn't exist")) {
+        throw new Error(
+          "Ticket types are not enabled on the database yet. Run: npm run db:migrate:tiers",
+        );
       }
+      throw err;
     }
   }
 

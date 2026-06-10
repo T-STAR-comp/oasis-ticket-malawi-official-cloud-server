@@ -42,6 +42,20 @@ export async function listTiersForListing(listingId) {
     }
     return tiers;
 }
+/** Backfill a Standard tier for listings saved before the tiers migration. */
+export async function ensureDefaultTierForListing(listingId, priceMwk) {
+    const existing = await listTiersForListing(listingId);
+    if (existing.length > 0)
+        return existing;
+    const id = uuid();
+    const price = Math.max(1, Math.floor(priceMwk));
+    await pool.query(`INSERT INTO listing_ticket_tiers (
+       id, listing_id, name, description, price_mwk, capacity, sort_order
+     ) VALUES (
+       :id, :listingId, 'Standard', NULL, :priceMwk, NULL, 0
+     )`, { id, listingId, priceMwk: price });
+    return listTiersForListing(listingId);
+}
 export async function resolveTier(listingId, tierId) {
     const [rows] = await pool.query(`SELECT * FROM listing_ticket_tiers WHERE id = :tierId AND listing_id = :listingId LIMIT 1`, { tierId, listingId });
     const row = rows[0];

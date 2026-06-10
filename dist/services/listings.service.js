@@ -50,7 +50,11 @@ async function attachTicketTiers(row, listing) {
     if (row.kind !== "event")
         return listing;
     try {
-        const tiers = await ticketTiersService.listTiersForListing(row.id);
+        let tiers = await ticketTiersService.listTiersForListing(row.id);
+        if (tiers.length === 0) {
+            const fallbackPrice = Number(row.price_mwk) || Number(listing.price) || 1;
+            tiers = await ticketTiersService.ensureDefaultTierForListing(row.id, fallbackPrice);
+        }
         if (tiers.length > 0) {
             return {
                 ...listing,
@@ -59,8 +63,11 @@ async function attachTicketTiers(row, listing) {
             };
         }
     }
-    catch {
-        // Table may not exist before migration
+    catch (err) {
+        if (err instanceof Error && err.message.includes("doesn't exist")) {
+            return listing;
+        }
+        throw err;
     }
     return listing;
 }
@@ -293,9 +300,10 @@ export async function upsertListing(organizerId, body) {
             }
         }
         catch (err) {
-            if (!(err instanceof Error && err.message.includes("doesn't exist"))) {
-                throw err;
+            if (err instanceof Error && err.message.includes("doesn't exist")) {
+                throw new Error("Ticket types are not enabled on the database yet. Run: npm run db:migrate:tiers");
             }
+            throw err;
         }
     }
     if (status === "published" || status === "sold_out") {
