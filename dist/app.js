@@ -41,7 +41,27 @@ export function createApp() {
     app.get("/api/health", async (_req, res) => {
         try {
             await pool.query("SELECT 1");
-            res.json({ success: true, service: "ticket-malawi-cloud-server", database: "connected" });
+            let resellReady = false;
+            try {
+                const [tables] = await pool.query(`SELECT 1 FROM information_schema.tables
+           WHERE table_schema = DATABASE() AND table_name = 'resell_listings'
+           LIMIT 1`);
+                resellReady = tables.length > 0;
+            }
+            catch {
+                resellReady = false;
+            }
+            res.setHeader("Cache-Control", "no-store");
+            res.json({
+                success: true,
+                service: "ticket-malawi-cloud-server",
+                database: "connected",
+                apiVersion: 2,
+                features: {
+                    checkoutUsesProfile: true,
+                    resell: resellReady,
+                },
+            });
         }
         catch {
             res.status(503).json({ success: false, service: "ticket-malawi-cloud-server", database: "disconnected" });

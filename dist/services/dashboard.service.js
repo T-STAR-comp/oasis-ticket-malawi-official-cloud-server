@@ -2,14 +2,20 @@ import { v4 as uuid } from "uuid";
 import { pool } from "../db/pool.js";
 import * as emailService from "./email.service.js";
 import { getListingById } from "./listings.service.js";
-async function ticketHasPendingRefund(userTicketId) {
-    const [rows] = await pool.query(`SELECT 1 FROM ticket_refunds
-     WHERE user_ticket_id = :userTicketId AND status = 'pending'
-     LIMIT 1`, { userTicketId });
-    return rows.length > 0;
+function isMissingTableError(err) {
+    return (err instanceof Error &&
+        (err.message.includes("doesn't exist") || err.message.includes("Unknown table")));
 }
-export async function getUserTickets(userId, status) {
-    let sql = `
+const BASE_TICKETS_SQL = `
+    SELECT ut.*, l.title, l.category, l.date_label, l.time_label, l.kind, l.image_url,
+           l.operator_name, l.location, l.organizer_id, l.status AS listing_status,
+           l.event_starts_on, ut.ticket_tier_name,
+           op.status AS organizer_status, op.flagged_at, op.flag_reason,
+           op.suspension_reason
+    FROM user_tickets ut
+    JOIN listings l ON l.id = ut.listing_id
+    JOIN organizer_profiles op ON op.user_id = l.organizer_id`;
+const EXTENDED_TICKETS_SQL = `
     SELECT ut.*, l.title, l.category, l.date_label, l.time_label, l.kind, l.image_url,
            l.operator_name, l.location, l.organizer_id, l.status AS listing_status,
            l.event_starts_on, ut.ticket_tier_name,
@@ -25,71 +31,96 @@ export async function getUserTickets(userId, status) {
     JOIN listings l ON l.id = ut.listing_id
     JOIN organizer_profiles op ON op.user_id = l.organizer_id
     LEFT JOIN resell_listings rl_active
-      ON rl_active.user_ticket_id = ut.id AND rl_active.status = 'active'
-    WHERE ut.user_id = :userId`;
+      ON rl_active.user_ticket_id = ut.id AND rl_active.status = 'active'`;
+async function queryUserTicketRows(userId, filters) {
     const params = { userId };
-    if (status) {
+    let sql = EXTENDED_TICKETS_SQL;
+    sql += ` WHERE ut.user_id = :userId`;
+    if (filters?.status) {
         sql += ` AND ut.status = :status`;
-        params.status = status;
+        params.status = filters.status;
+    }
+    if (filters?.ticketId) {
+        sql += ` AND ut.id = :ticketId`;
+        params.ticketId = filters.ticketId;
     }
     sql += ` ORDER BY ut.purchased_at DESC`;
-    const [rows] = await pool.query(sql, params);
-    return rows.map((r) => {
-        const organizerRestricted = ["suspended", "banned", "inactive"].includes(String(r.organizer_status));
-        const listingPostponed = String(r.listing_status) === "postponed";
-        const listingCancelled = String(r.listing_status) === "cancelled";
-        const postponedMessage = listingPostponed && r.status === "active"
-            ? `This ${r.kind === "travel" ? "trip" : "event"} has been postponed to ${r.date_label}${r.time_label ? ` · ${r.time_label}` : ""}. Your ticket is valid for the new date.`
-            : undefined;
-        const refundPending = Boolean(r.refund_pending);
-        const cancelledMessage = listingCancelled
-            ? `This ${r.kind === "travel" ? "trip" : "event"} was cancelled by the organizer. Your ticket is no longer valid. Eligible purchases receive a 90% refund by email; 10% covers processing and convenience fees.`
-            : undefined;
-        const refundPendingMessage = refundPending
-            ? "A refund is being processed for this ticket. Sharing is disabled until the refund completes."
-            : undefined;
-        return {
-            id: r.id,
-            ticketId: r.listing_id,
-            reference: r.reference,
-            qrToken: r.qr_token,
-            status: r.status,
-            purchasedOn: r.purchased_at,
-            seat: r.seat_number ? String(r.seat_number) : undefined,
-            ticketTierName: r.ticket_tier_name ? String(r.ticket_tier_name) : undefined,
-            amountPaid: r.amount_paid,
-            organizerRestricted,
-            organizerFlagged: r.flagged_at != null,
-            organizerStatus: r.organizer_status,
-            listingStatus: r.listing_status,
-            listingPostponed,
-            listingCancelled,
-            refundPending,
-            holdMessage: refundPendingMessage
-                ?? (organizerRestricted
-                    ? "There are issues with this organizer. Your ticket will be available once the issues are cleared."
-                    : cancelledMessage ?? postponedMessage),
-            resellListing: r.resell_listing_id
-                ? {
-                    id: String(r.resell_listing_id),
-                    priceMwk: Number(r.resell_price_mwk),
-                }
-                : undefined,
-            ticket: {
-                title: r.title,
-                category: r.category,
-                date: r.date_label,
-                kind: r.kind,
-                image: r.image_url,
-                operator: { name: r.operator_name },
-                location: r.location,
-            },
-        };
-    });
+    try {
+        const [rows] = await pool.query(sql, params);
+        return rows;
+    }
+    catch (err) {
+        if (!isMissingTableError(err))
+            throw err;
+        let fallbackSql = BASE_TICKETS_SQL + ` WHERE ut.user_id = :userId`;
+        if (filters?.status)
+            fallbackSql += ` AND ut.status = :status`;
+        if (filters?.ticketId)
+            fallbackSql += ` AND ut.id = :ticketId`;
+        fallbackSql += ` ORDER BY ut.purchased_at DESC`;
+        const [rows] = await pool.query(fallbackSql, params);
+        return rows.map((row) => ({ ...row, refund_pending: 0, resell_listing_id: null, resell_price_mwk: null }));
+    }
+}
+function mapUserTicketRow(r) {
+    const organizerRestricted = ["suspended", "banned", "inactive"].includes(String(r.organizer_status));
+    const listingPostponed = String(r.listing_status) === "postponed";
+    const listingCancelled = String(r.listing_status) === "cancelled";
+    const postponedMessage = listingPostponed && r.status === "active"
+        ? `This ${r.kind === "travel" ? "trip" : "event"} has been postponed to ${r.date_label}${r.time_label ? ` · ${r.time_label}` : ""}. Your ticket is valid for the new date.`
+        : undefined;
+    const refundPending = Boolean(r.refund_pending);
+    const cancelledMessage = listingCancelled
+        ? `This ${r.kind === "travel" ? "trip" : "event"} was cancelled by the organizer. Your ticket is no longer valid. Eligible purchases receive a 90% refund by email; 10% covers processing and convenience fees.`
+        : undefined;
+    const refundPendingMessage = refundPending
+        ? "A refund is being processed for this ticket. Sharing is disabled until the refund completes."
+        : undefined;
+    return {
+        id: r.id,
+        ticketId: r.listing_id,
+        reference: r.reference,
+        qrToken: r.qr_token,
+        status: r.status,
+        purchasedOn: r.purchased_at,
+        seat: r.seat_number ? String(r.seat_number) : undefined,
+        ticketTierName: r.ticket_tier_name ? String(r.ticket_tier_name) : undefined,
+        amountPaid: r.amount_paid,
+        organizerRestricted,
+        organizerFlagged: r.flagged_at != null,
+        organizerStatus: r.organizer_status,
+        listingStatus: r.listing_status,
+        listingPostponed,
+        listingCancelled,
+        refundPending,
+        holdMessage: refundPendingMessage
+            ?? (organizerRestricted
+                ? "There are issues with this organizer. Your ticket will be available once the issues are cleared."
+                : cancelledMessage ?? postponedMessage),
+        resellListing: r.resell_listing_id
+            ? {
+                id: String(r.resell_listing_id),
+                priceMwk: Number(r.resell_price_mwk),
+            }
+            : undefined,
+        ticket: {
+            title: r.title,
+            category: r.category,
+            date: r.date_label,
+            kind: r.kind,
+            image: r.image_url,
+            operator: { name: r.operator_name },
+            location: r.location,
+        },
+    };
+}
+export async function getUserTickets(userId, status) {
+    const rows = await queryUserTicketRows(userId, status ? { status } : undefined);
+    return rows.map(mapUserTicketRow);
 }
 export async function getUserTicketDetail(userId, ticketId) {
-    const tickets = await getUserTickets(userId);
-    const purchase = tickets.find((t) => t.id === ticketId);
+    const rows = await queryUserTicketRows(userId, { ticketId });
+    const purchase = rows[0] ? mapUserTicketRow(rows[0]) : null;
     if (!purchase)
         return null;
     const listing = await getListingById(purchase.ticketId, true);

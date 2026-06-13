@@ -1,7 +1,13 @@
+function noStoreJson(res) {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+}
 export function ok(res, data, status = 200) {
+    noStoreJson(res);
     return res.status(status).json({ success: true, data });
 }
 export function fail(res, message, status = 400, details) {
+    noStoreJson(res);
     return res.status(status).json({ success: false, error: message, details });
 }
 export function slugify(text) {

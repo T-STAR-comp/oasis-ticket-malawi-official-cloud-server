@@ -4,18 +4,24 @@ import { pool, type QueryParams } from "../db/pool.js";
 import * as emailService from "./email.service.js";
 import { getListingById } from "./listings.service.js";
 
-async function ticketHasPendingRefund(userTicketId: string): Promise<boolean> {
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT 1 FROM ticket_refunds
-     WHERE user_ticket_id = :userTicketId AND status = 'pending'
-     LIMIT 1`,
-    { userTicketId },
+function isMissingTableError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err.message.includes("doesn't exist") || err.message.includes("Unknown table"))
   );
-  return rows.length > 0;
 }
 
-export async function getUserTickets(userId: string, status?: "active" | "used" | "expired") {
-  let sql = `
+const BASE_TICKETS_SQL = `
+    SELECT ut.*, l.title, l.category, l.date_label, l.time_label, l.kind, l.image_url,
+           l.operator_name, l.location, l.organizer_id, l.status AS listing_status,
+           l.event_starts_on, ut.ticket_tier_name,
+           op.status AS organizer_status, op.flagged_at, op.flag_reason,
+           op.suspension_reason
+    FROM user_tickets ut
+    JOIN listings l ON l.id = ut.listing_id
+    JOIN organizer_profiles op ON op.user_id = l.organizer_id`;
+
+const EXTENDED_TICKETS_SQL = `
     SELECT ut.*, l.title, l.category, l.date_label, l.time_label, l.kind, l.image_url,
            l.operator_name, l.location, l.organizer_id, l.status AS listing_status,
            l.event_starts_on, ut.ticket_tier_name,
@@ -31,17 +37,40 @@ export async function getUserTickets(userId: string, status?: "active" | "used" 
     JOIN listings l ON l.id = ut.listing_id
     JOIN organizer_profiles op ON op.user_id = l.organizer_id
     LEFT JOIN resell_listings rl_active
-      ON rl_active.user_ticket_id = ut.id AND rl_active.status = 'active'
-    WHERE ut.user_id = :userId`;
+      ON rl_active.user_ticket_id = ut.id AND rl_active.status = 'active'`;
+
+async function queryUserTicketRows(
+  userId: string,
+  filters?: { status?: "active" | "used" | "expired"; ticketId?: string },
+) {
   const params: QueryParams = { userId };
-  if (status) {
+  let sql = EXTENDED_TICKETS_SQL;
+  sql += ` WHERE ut.user_id = :userId`;
+  if (filters?.status) {
     sql += ` AND ut.status = :status`;
-    params.status = status;
+    params.status = filters.status;
+  }
+  if (filters?.ticketId) {
+    sql += ` AND ut.id = :ticketId`;
+    params.ticketId = filters.ticketId;
   }
   sql += ` ORDER BY ut.purchased_at DESC`;
 
-  const [rows] = await pool.query<RowDataPacket[]>(sql, params);
-  return rows.map((r) => {
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>(sql, params);
+    return rows;
+  } catch (err) {
+    if (!isMissingTableError(err)) throw err;
+    let fallbackSql = BASE_TICKETS_SQL + ` WHERE ut.user_id = :userId`;
+    if (filters?.status) fallbackSql += ` AND ut.status = :status`;
+    if (filters?.ticketId) fallbackSql += ` AND ut.id = :ticketId`;
+    fallbackSql += ` ORDER BY ut.purchased_at DESC`;
+    const [rows] = await pool.query<RowDataPacket[]>(fallbackSql, params);
+    return rows.map((row) => ({ ...row, refund_pending: 0, resell_listing_id: null, resell_price_mwk: null }));
+  }
+}
+
+function mapUserTicketRow(r: RowDataPacket) {
     const organizerRestricted = ["suspended", "banned", "inactive"].includes(
       String(r.organizer_status),
     );
@@ -95,13 +124,18 @@ export async function getUserTickets(userId: string, status?: "active" | "used" 
       location: r.location,
     },
   };
-  });
+}
+
+export async function getUserTickets(userId: string, status?: "active" | "used" | "expired") {
+  const rows = await queryUserTicketRows(userId, status ? { status } : undefined);
+  return rows.map(mapUserTicketRow);
 }
 
 export async function getUserTicketDetail(userId: string, ticketId: string) {
-  const tickets = await getUserTickets(userId);
-  const purchase = tickets.find((t) => t.id === ticketId);
+  const rows = await queryUserTicketRows(userId, { ticketId });
+  const purchase = rows[0] ? mapUserTicketRow(rows[0]) : null;
   if (!purchase) return null;
+
   const listing = await getListingById(purchase.ticketId, true);
   if (!listing) return null;
   return { purchase, listing };
