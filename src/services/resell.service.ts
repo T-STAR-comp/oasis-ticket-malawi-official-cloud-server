@@ -15,11 +15,23 @@ import {
   type MomoOperator,
 } from "./paychangu.service.js";
 import { makeReference } from "../utils/http.js";
-import { getPaymentMethodForUser } from "./payment-methods.service.js";
+import {
+  getPaymentMethodForUser,
+  maybeSavePaymentMethodFromCheckout,
+} from "./payment-methods.service.js";
 import { normalizeMalawiPhone } from "../utils/phone.js";
 import { computePlatformServiceFee, platformServiceFeePercent } from "../utils/platform-fee.js";
 
 const SETTLEMENT_DAYS = 1;
+
+function isMissingResellTableError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err.message.includes("resell_listings") ||
+      err.message.includes("doesn't exist") ||
+      err.message.includes("Unknown table"))
+  );
+}
 
 export type ResellCheckoutInput = {
   paymentMethod: "airtel" | "tnm";
@@ -64,46 +76,60 @@ async function assertTicketResellable(userId: string, userTicketId: string) {
 }
 
 export async function listPublicResellListings() {
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT rl.*, l.title, l.subtitle, l.category, l.date_label, l.time_label, l.location,
-            l.kind, l.image_url, l.operator_name, l.event_starts_on,
-            ut.reference AS ticket_reference, ut.ticket_tier_name
-     FROM resell_listings rl
-     JOIN listings l ON l.id = rl.listing_id
-     JOIN user_tickets ut ON ut.id = rl.user_ticket_id
-     WHERE rl.status = 'active'
-     ORDER BY rl.created_at DESC`,
-  );
-  return rows.map((r) => ({
-    id: r.id,
-    priceMwk: Number(r.price_mwk),
-    listingId: r.listing_id,
-    title: r.title,
-    subtitle: r.subtitle,
-    category: r.category,
-    date: r.date_label,
-    time: r.time_label,
-    location: r.location,
-    kind: r.kind,
-    image: r.image_url,
-    operator: { name: r.operator_name },
-    ticketTierName: r.ticket_tier_name ?? undefined,
-    eventStartsOn: r.event_starts_on,
-  }));
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT rl.*, l.title, l.subtitle, l.category, l.date_label, l.time_label, l.location,
+              l.kind, l.image_url, l.operator_name, l.event_starts_on,
+              ut.reference AS ticket_reference, ut.ticket_tier_name
+       FROM resell_listings rl
+       JOIN listings l ON l.id = rl.listing_id
+       JOIN user_tickets ut ON ut.id = rl.user_ticket_id
+       WHERE rl.status = 'active'
+       ORDER BY rl.created_at DESC`,
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      priceMwk: Number(r.price_mwk),
+      listingId: r.listing_id,
+      title: r.title,
+      subtitle: r.subtitle,
+      category: r.category,
+      date: r.date_label,
+      time: r.time_label,
+      location: r.location,
+      kind: r.kind,
+      image: r.image_url,
+      operator: { name: r.operator_name },
+      ticketTierName: r.ticket_tier_name ?? undefined,
+      eventStartsOn: r.event_starts_on,
+    }));
+  } catch (err) {
+    if (isMissingResellTableError(err)) {
+      console.warn("[resell] Marketplace tables missing — run: npm run db:migrate:marketplace");
+      return [];
+    }
+    throw err;
+  }
 }
 
 export async function getPublicResellListing(resellId: string) {
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT rl.*, l.title, l.subtitle, l.category, l.date_label, l.time_label, l.location,
-            l.kind, l.image_url, l.description, l.operator_name, l.operator_tagline,
-            l.event_starts_on, ut.ticket_tier_name
-     FROM resell_listings rl
-     JOIN listings l ON l.id = rl.listing_id
-     JOIN user_tickets ut ON ut.id = rl.user_ticket_id
-     WHERE rl.id = :resellId AND rl.status = 'active'
-     LIMIT 1`,
-    { resellId },
-  );
+  let rows: RowDataPacket[];
+  try {
+    [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT rl.*, l.title, l.subtitle, l.category, l.date_label, l.time_label, l.location,
+              l.kind, l.image_url, l.description, l.operator_name, l.operator_tagline,
+              l.event_starts_on, ut.ticket_tier_name
+       FROM resell_listings rl
+       JOIN listings l ON l.id = rl.listing_id
+       JOIN user_tickets ut ON ut.id = rl.user_ticket_id
+       WHERE rl.id = :resellId AND rl.status = 'active'
+       LIMIT 1`,
+      { resellId },
+    );
+  } catch (err) {
+    if (isMissingResellTableError(err)) return null;
+    throw err;
+  }
   const r = rows[0];
   if (!r) return null;
   const priceMwk = Number(r.price_mwk);
@@ -368,6 +394,13 @@ export async function initiateResellCheckout(
   } finally {
     conn.release();
   }
+
+  await maybeSavePaymentMethodFromCheckout(buyerId, {
+    savePaymentMethod: input.savePaymentMethod,
+    paymentMethodId: input.paymentMethodId,
+    paymentMethod: input.paymentMethod,
+    paymentPhone,
+  });
 
   return {
     orderId,
