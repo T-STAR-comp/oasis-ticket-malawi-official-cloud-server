@@ -64,3 +64,28 @@ export async function setDefaultPaymentMethod(userId, methodId) {
     await pool.query(`UPDATE payment_methods SET is_default = 1 WHERE id = :id AND user_id = :userId`, { id: methodId, userId });
     return getPaymentMethodForUser(userId, methodId);
 }
+/** Save mobile money number after checkout when the user opted in. Never throws. */
+export async function maybeSavePaymentMethodFromCheckout(userId, input) {
+    if (!input.savePaymentMethod || input.paymentMethodId)
+        return;
+    if (input.paymentMethod !== "airtel" && input.paymentMethod !== "tnm")
+        return;
+    const phone = normalizeMalawiPhone(input.paymentPhone ?? "");
+    if (!phone)
+        return;
+    try {
+        const [rows] = await pool.query(`SELECT id FROM payment_methods
+       WHERE user_id = :userId AND type = :type AND phone_number = :phone
+       LIMIT 1`, { userId, type: input.paymentMethod, phone });
+        if (rows[0])
+            return mapRow(rows[0], true);
+        return await addPaymentMethod(userId, {
+            type: input.paymentMethod,
+            phone,
+        });
+    }
+    catch (err) {
+        console.error("[payment-methods] save from checkout failed:", err);
+        return null;
+    }
+}

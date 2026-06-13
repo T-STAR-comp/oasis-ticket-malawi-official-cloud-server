@@ -11,7 +11,7 @@ import { initiateMobileMoneyCharge, TERMINAL_PAYMENT_STATUSES, verifyMobileMoney
 import { makeReference } from "../utils/http.js";
 import { computeReferralPricing, recordReferralEarning, resolveActiveReferral, } from "./referral.service.js";
 import { getProfile } from "./auth.service.js";
-import { getPaymentMethodForUser } from "./payment-methods.service.js";
+import { getPaymentMethodForUser, maybeSavePaymentMethodFromCheckout } from "./payment-methods.service.js";
 import { normalizeMalawiPhone } from "../utils/phone.js";
 import { fulfillResellSale } from "./resell.service.js";
 import { computePlatformServiceFee, } from "../utils/platform-fee.js";
@@ -320,6 +320,12 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
             providerStatus: init.providerStatus,
         });
         await conn.commit();
+        await maybeSavePaymentMethodFromCheckout(userId, {
+            savePaymentMethod: input.savePaymentMethod,
+            paymentMethodId: input.paymentMethodId,
+            paymentMethod: input.paymentMethod,
+            paymentPhone: input.paymentPhone,
+        });
         return {
             orderId,
             ledgerId,

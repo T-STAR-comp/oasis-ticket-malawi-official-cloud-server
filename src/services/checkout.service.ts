@@ -35,7 +35,7 @@ import {
   resolveActiveReferral,
 } from "./referral.service.js";
 import { getProfile } from "./auth.service.js";
-import { getPaymentMethodForUser, addPaymentMethod } from "./payment-methods.service.js";
+import { getPaymentMethodForUser, maybeSavePaymentMethodFromCheckout } from "./payment-methods.service.js";
 import { normalizeMalawiPhone } from "../utils/phone.js";
 import { fulfillResellSale } from "./resell.service.js";
 import {
@@ -450,6 +450,13 @@ async function createCheckoutWithPayChangu(
     );
 
     await conn.commit();
+
+    await maybeSavePaymentMethodFromCheckout(userId, {
+      savePaymentMethod: input.savePaymentMethod,
+      paymentMethodId: input.paymentMethodId,
+      paymentMethod: input.paymentMethod,
+      paymentPhone: input.paymentPhone,
+    });
 
     return {
       orderId,

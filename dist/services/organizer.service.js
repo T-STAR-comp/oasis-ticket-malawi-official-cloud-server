@@ -1,25 +1,31 @@
 import { pool } from "../db/pool.js";
 export async function getOverview(organizerId) {
-    const [revenueRows] = await pool.query(`SELECT COALESCE(SUM(oi.line_total), 0) AS revenue, COUNT(DISTINCT o.id) AS orders
+    const [revenueRows] = await pool.query(`SELECT COALESCE(SUM(o.subtotal_mwk), 0) AS revenue
      FROM orders o
-     JOIN order_items oi ON oi.order_id = o.id
      JOIN listings l ON l.id = o.listing_id
      WHERE l.organizer_id = :organizerId AND o.status = 'confirmed'`, { organizerId });
+    const [ticketRows] = await pool.query(`SELECT COUNT(ut.id) AS ticketsSold
+     FROM user_tickets ut
+     JOIN orders o ON o.id = ut.order_id
+     JOIN listings l ON l.id = ut.listing_id
+     WHERE l.organizer_id = :organizerId AND o.status = 'confirmed'`, { organizerId });
     const [listingRows] = await pool.query(`SELECT COUNT(*) AS active FROM listings WHERE organizer_id = :organizerId AND status = 'published'`, { organizerId });
-    const [byListing] = await pool.query(`SELECT l.id, l.title, COUNT(DISTINCT o.id) AS buyers, COALESCE(SUM(oi.line_total), 0) AS revenue
+    const [byListing] = await pool.query(`SELECT l.id, l.title,
+       COUNT(ut.id) AS ticketsSold,
+       COALESCE(SUM(o.subtotal_mwk), 0) AS revenue
      FROM listings l
      LEFT JOIN orders o ON o.listing_id = l.id AND o.status = 'confirmed'
-     LEFT JOIN order_items oi ON oi.order_id = o.id
+     LEFT JOIN user_tickets ut ON ut.order_id = o.id
      WHERE l.organizer_id = :organizerId
      GROUP BY l.id, l.title`, { organizerId });
     return {
         totalRevenue: Number(revenueRows[0]?.revenue ?? 0),
-        ticketsSold: Number(revenueRows[0]?.orders ?? 0),
+        ticketsSold: Number(ticketRows[0]?.ticketsSold ?? 0),
         activeListings: Number(listingRows[0]?.active ?? 0),
         revenueByListing: byListing.map((r) => ({
             listingId: r.id,
             title: r.title,
-            buyers: Number(r.buyers),
+            ticketsSold: Number(r.ticketsSold),
             revenue: Number(r.revenue),
         })),
     };

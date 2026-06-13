@@ -66,10 +66,11 @@ export async function getOrganizerFinance(organizerId: string) {
 
   const [byListing] = await pool.query<RowDataPacket[]>(
     `SELECT l.id AS listingId, l.title,
-       COALESCE(SUM(CASE WHEN o.status = 'confirmed' THEN o.total_mwk ELSE 0 END), 0) AS revenue,
-       COUNT(CASE WHEN o.status = 'confirmed' THEN 1 END) AS orders
+       COALESCE(SUM(CASE WHEN o.status = 'confirmed' THEN o.subtotal_mwk ELSE 0 END), 0) AS revenue,
+       COUNT(CASE WHEN o.status = 'confirmed' THEN ut.id END) AS ticketsSold
      FROM listings l
      LEFT JOIN orders o ON o.listing_id = l.id
+     LEFT JOIN user_tickets ut ON ut.order_id = o.id
      WHERE l.organizer_id = :organizerId
      GROUP BY l.id, l.title
      ORDER BY revenue DESC`,
@@ -102,7 +103,7 @@ export async function getOrganizerFinance(organizerId: string) {
       listingId: r.listingId as string,
       title: r.title as string,
       revenue: Number(r.revenue ?? 0),
-      orders: Number(r.orders ?? 0),
+      ticketsSold: Number(r.ticketsSold ?? 0),
     })),
     transactions: txnRows.map(mapTransaction),
   };
