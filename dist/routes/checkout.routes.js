@@ -8,6 +8,7 @@ import { requireAuth } from "../middleware/auth.js";
 import * as referralService from "../services/referral.service.js";
 import { fail, ok } from "../utils/http.js";
 import { emptyToUndefined, formatZodError, optionalTierId, optionalUuid, } from "../utils/zod-helpers.js";
+/** Checkout body — contact details come from the signed-in user's profile server-side. */
 const checkoutSchema = z.object({
     qty: z.coerce.number().int().min(1).max(20).default(1),
     seatNumbers: z
@@ -19,10 +20,6 @@ const checkoutSchema = z.object({
     paymentPhone: z.preprocess(emptyToUndefined, z.string().trim().min(8).max(32).optional()),
     paymentMethodId: optionalUuid(),
     savePaymentMethod: z.boolean().optional(),
-    contactName: z.preprocess(emptyToUndefined, z.string().trim().min(2).optional()),
-    contactEmail: z.preprocess(emptyToUndefined, z.string().email().optional()),
-    contactPhone: z.preprocess(emptyToUndefined, z.string().trim().min(8).optional()),
-    nationalId: z.preprocess(emptyToUndefined, z.string().trim().optional()),
     queueId: optionalUuid(),
     referralCode: z.preprocess(emptyToUndefined, z.string().trim().min(2).max(64).optional()),
 });

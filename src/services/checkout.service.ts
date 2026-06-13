@@ -54,12 +54,13 @@ export type CheckoutInput = {
   paymentPhone?: string;
   paymentMethodId?: string;
   savePaymentMethod?: boolean;
+  queueId?: string;
+  referralCode?: string;
+  /** Populated server-side from the signed-in user's profile — not sent by the client. */
   contactName?: string;
   contactEmail?: string;
   contactPhone?: string;
   nationalId?: string;
-  queueId?: string;
-  referralCode?: string;
 };
 
 function makeChargeId(ledgerId: string): string {
@@ -74,6 +75,15 @@ async function resolveCheckoutIdentity(userId: string, input: CheckoutInput) {
   const profile = await getProfile(userId);
   if (!profile) throw new Error("Account not found");
 
+  const fullName = String(profile.full_name ?? "").trim();
+  const email = String(profile.email ?? "").trim();
+  if (!fullName) {
+    throw new Error("Your account is missing a name. Update your profile in Dashboard → Account.");
+  }
+  if (!email) {
+    throw new Error("Your account is missing an email. Update your profile in Dashboard → Account.");
+  }
+
   let paymentPhone = input.paymentPhone;
   if (input.paymentMethodId) {
     const method = await getPaymentMethodForUser(userId, input.paymentMethodId);
@@ -87,12 +97,14 @@ async function resolveCheckoutIdentity(userId: string, input: CheckoutInput) {
   }
   if (!paymentPhone) throw new Error("Mobile money number is required");
 
+  const profilePhone = String(profile.phone ?? "").trim();
+
   return {
-    contactName: input.contactName?.trim() || String(profile.full_name),
-    contactEmail: input.contactEmail?.trim() || String(profile.email),
-    contactPhone: input.contactPhone?.trim() || String(profile.phone ?? paymentPhone),
+    contactName: fullName,
+    contactEmail: email,
+    contactPhone: profilePhone || paymentPhone,
     paymentPhone,
-    nationalId: input.nationalId?.trim() || undefined,
+    nationalId: String(profile.national_id ?? "").trim() || undefined,
   };
 }
 
