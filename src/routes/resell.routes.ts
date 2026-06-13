@@ -1,9 +1,10 @@
 import { Router } from "express";
-import { z } from "zod";
+import { z, ZodError } from "zod";
 import * as resellService from "../services/resell.service.js";
 import * as checkoutService from "../services/checkout.service.js";
 import { requireAuth, type AuthedRequest } from "../middleware/auth.js";
 import { fail, ok } from "../utils/http.js";
+import { emptyToUndefined, formatZodError, optionalUuid } from "../utils/zod-helpers.js";
 import { PayChanguError } from "../services/paychangu.service.js";
 
 export const resellRouter = Router();
@@ -49,8 +50,8 @@ resellRouter.post("/:id/checkout", requireAuth, async (req, res, next) => {
     const body = z
       .object({
         paymentMethod: z.enum(["airtel", "tnm"]),
-        paymentPhone: z.string().optional(),
-        paymentMethodId: z.string().uuid().optional(),
+        paymentPhone: z.preprocess(emptyToUndefined, z.string().trim().min(8).max(32).optional()),
+        paymentMethodId: optionalUuid(),
         savePaymentMethod: z.boolean().optional(),
       })
       .parse(req.body);
@@ -61,6 +62,7 @@ resellRouter.post("/:id/checkout", requireAuth, async (req, res, next) => {
     );
     return ok(res, result, 201);
   } catch (err) {
+    if (err instanceof ZodError) return fail(res, formatZodError(err), 400);
     if (err instanceof PayChanguError) {
       return fail(res, err.message, err.status >= 400 && err.status < 500 ? err.status : 402);
     }

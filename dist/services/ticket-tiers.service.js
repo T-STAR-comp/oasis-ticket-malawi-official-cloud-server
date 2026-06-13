@@ -101,7 +101,8 @@ export async function saveTiersForListing(listingId, kind, tiers, fallbackPrice)
     const keepIds = new Set();
     for (let i = 0; i < normalized.length; i++) {
         const tier = normalized[i];
-        const id = tier.id && existing.some((t) => t.id === tier.id) ? tier.id : uuid();
+        const existingMatch = tier.id ? existing.find((t) => t.id === tier.id) : undefined;
+        const id = existingMatch ? existingMatch.id : uuid();
         keepIds.add(id);
         const capacity = tier.capacity != null && tier.capacity > 0 ? Math.floor(tier.capacity) : null;
         await pool.query(`INSERT INTO listing_ticket_tiers (

@@ -177,7 +177,8 @@ export async function saveTiersForListing(
 
   for (let i = 0; i < normalized.length; i++) {
     const tier = normalized[i];
-    const id = tier.id && existing.some((t) => t.id === tier.id) ? tier.id : uuid();
+    const existingMatch = tier.id ? existing.find((t) => t.id === tier.id) : undefined;
+    const id = existingMatch ? existingMatch.id : uuid();
     keepIds.add(id);
     const capacity =
       tier.capacity != null && tier.capacity > 0 ? Math.floor(tier.capacity) : null;

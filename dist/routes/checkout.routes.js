@@ -7,20 +7,24 @@ import { PayChanguError } from "../services/paychangu.service.js";
 import { requireAuth } from "../middleware/auth.js";
 import * as referralService from "../services/referral.service.js";
 import { fail, ok } from "../utils/http.js";
+import { emptyToUndefined, formatZodError, optionalTierId, optionalUuid, } from "../utils/zod-helpers.js";
 const checkoutSchema = z.object({
-    qty: z.number().int().min(1).max(20).default(1),
-    seatNumbers: z.array(z.number().int().positive()).optional(),
-    tierId: z.string().uuid().optional(),
+    qty: z.coerce.number().int().min(1).max(20).default(1),
+    seatNumbers: z
+        .array(z.coerce.number().int().positive())
+        .optional()
+        .transform((nums) => (nums && nums.length > 0 ? nums : undefined)),
+    tierId: optionalTierId(),
     paymentMethod: z.enum(["airtel", "tnm", "card"]),
-    paymentPhone: z.string().optional(),
-    paymentMethodId: z.string().uuid().optional(),
+    paymentPhone: z.preprocess(emptyToUndefined, z.string().trim().min(8).max(32).optional()),
+    paymentMethodId: optionalUuid(),
     savePaymentMethod: z.boolean().optional(),
-    contactName: z.string().min(2).optional(),
-    contactEmail: z.string().email().optional(),
-    contactPhone: z.string().min(8).optional(),
-    nationalId: z.string().optional(),
-    queueId: z.string().uuid().optional(),
-    referralCode: z.string().min(2).max(64).optional(),
+    contactName: z.preprocess(emptyToUndefined, z.string().trim().min(2).optional()),
+    contactEmail: z.preprocess(emptyToUndefined, z.string().email().optional()),
+    contactPhone: z.preprocess(emptyToUndefined, z.string().trim().min(8).optional()),
+    nationalId: z.preprocess(emptyToUndefined, z.string().trim().optional()),
+    queueId: optionalUuid(),
+    referralCode: z.preprocess(emptyToUndefined, z.string().trim().min(2).max(64).optional()),
 });
 const accessQuerySchema = z.object({
     qty: z.coerce.number().int().min(1).max(20).default(1),
@@ -97,6 +101,8 @@ checkoutRouter.post("/:listingId", requireAuth, async (req, res, next) => {
         return ok(res, result, 201);
     }
     catch (err) {
+        if (err instanceof z.ZodError)
+            return fail(res, formatZodError(err), 400);
         if (err instanceof PayChanguError) {
             return fail(res, err.message, err.status >= 400 && err.status < 500 ? err.status : 402);
         }

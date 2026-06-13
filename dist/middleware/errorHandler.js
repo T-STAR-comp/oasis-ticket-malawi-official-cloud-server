@@ -1,5 +1,6 @@
 import { ZodError } from "zod";
 import { friendlyDuplicateMessage, friendlyReferencedMessage, isDuplicateEntryError, isReferencedRowError, } from "../utils/db-errors.js";
+import { formatZodError } from "../utils/zod-helpers.js";
 export function errorHandler(err, _req, res, _next) {
     if (isDuplicateEntryError(err)) {
         return res.status(409).json({
@@ -16,7 +17,7 @@ export function errorHandler(err, _req, res, _next) {
     if (err instanceof ZodError) {
         return res.status(400).json({
             success: false,
-            error: "Validation failed",
+            error: formatZodError(err),
             details: err.flatten(),
         });
     }
