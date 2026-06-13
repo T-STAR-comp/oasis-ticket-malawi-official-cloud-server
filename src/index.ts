@@ -1,4 +1,4 @@
-import { createApp } from "./app.js";
+import { API_BUILD_VERSION, createApp } from "./app.js";
 import { env } from "./config/env.js";
 import { ensureDatabaseConnection } from "./db/connect.js";
 import { ensureDefaultAdmin } from "./services/bootstrap.service.js";
@@ -23,6 +23,9 @@ async function start() {
   app.listen(env.port, () => {
     const mode = env.serveFrontend ? "API + React SPA" : "API only";
     console.log(`Ticket Malawi (${mode}) on http://localhost:${env.port}`);
+    console.log(
+      `API build version: ${API_BUILD_VERSION} (GET /api/health should report apiVersion=${API_BUILD_VERSION})`,
+    );
     console.log(`CORS origins: ${env.corsOrigins.join(", ")}`);
     startPaymentPoller();
     startReminderPoller();

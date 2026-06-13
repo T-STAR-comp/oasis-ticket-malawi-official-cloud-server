@@ -1,6 +1,8 @@
 import cors from "cors";
 import express from "express";
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { IMAGE_BUCKET_URL_PREFIX, resolveImageBucketDir } from "./config/images.js";
 import { env } from "./config/env.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -22,6 +24,9 @@ import { selfCheckinRouter } from "./routes/self-checkin.routes.js";
 import { pool } from "./db/pool.js";
 import { LEGAL_VERSION } from "./config/legal.js";
 import { registerFrontend } from "./middleware/serveFrontend.js";
+
+/** Bump when deploy verification fields on /api/health change. */
+export const API_BUILD_VERSION = 2;
 
 export function createApp() {
   const app = express();
@@ -60,11 +65,19 @@ export function createApp() {
         resellReady = false;
       }
       res.setHeader("Cache-Control", "no-store");
+      const distApp = path.join(path.dirname(fileURLToPath(import.meta.url)), "app.js");
+      let builtAt: string | undefined;
+      try {
+        builtAt = fs.statSync(distApp).mtime.toISOString();
+      } catch {
+        builtAt = undefined;
+      }
       res.json({
         success: true,
         service: "ticket-malawi-cloud-server",
         database: "connected",
-        apiVersion: 2,
+        apiVersion: API_BUILD_VERSION,
+        builtAt,
         features: {
           checkoutUsesProfile: true,
           resell: resellReady,

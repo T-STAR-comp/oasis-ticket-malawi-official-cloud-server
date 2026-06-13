@@ -27,6 +27,21 @@ if (!fs.existsSync(clientIndex)) {
   );
 }
 
+const appJs = path.join(__dirname, "dist", "app.js");
+if (fs.existsSync(appJs)) {
+  const built = fs.readFileSync(appJs, "utf8");
+  if (!built.includes("apiVersion")) {
+    console.warn(
+      "[server.cjs] dist/app.js is outdated (missing apiVersion). Run: npm run build:all",
+    );
+  } else {
+    const mtime = fs.statSync(appJs).mtime.toISOString();
+    console.log(`[server.cjs] dist/app.js built ${mtime}`);
+  }
+} else {
+  console.warn("[server.cjs] dist/app.js missing — run npm run build:all");
+}
+
 import(pathToFileURL(entry).href).catch((err) => {
   console.error("[server.cjs] Failed to start:", err);
   process.exit(1);

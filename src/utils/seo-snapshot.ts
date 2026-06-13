@@ -113,7 +113,7 @@ export async function buildSeoSnapshot(page: SeoPage): Promise<SeoSnapshot> {
   const events = eventsRaw.map((r) => listingToCard(r as Record<string, unknown>));
   const travel = travelRaw.map((r) => listingToCard(r as Record<string, unknown>));
 
-  const bodyHtml = `<main id="tm-seo-prerender" data-tm-seo="1" style="max-width:48rem;margin:0 auto;padding:1.5rem;font-family:system-ui,sans-serif;line-height:1.5;color:#111">
+  const bodyHtml = `<main id="tm-seo-prerender" data-tm-seo="1" hidden aria-hidden="true">
   <header>
     <h1>Ticket Malawi — Events &amp; Travel</h1>
     <p>Book festivals, concerts, and intercity bus routes across Malawi. Pay with mobile money, board with a QR code.</p>
@@ -150,7 +150,7 @@ function filterSnapshotForPage(snapshot: SeoSnapshot, page: SeoPage): SeoSnapsho
     page === "events" ? /Upcoming events in Malawi[\s\S]*?<\/section>/ : /Active bus routes[\s\S]*?<\/section>/;
   const section = snapshot.bodyHtml.match(sectionMatch)?.[0] ?? "";
 
-  const bodyHtml = `<main id="tm-seo-prerender" data-tm-seo="1" style="max-width:48rem;margin:0 auto;padding:1.5rem;font-family:system-ui,sans-serif;line-height:1.5;color:#111">
+  const bodyHtml = `<main id="tm-seo-prerender" data-tm-seo="1" hidden aria-hidden="true">
   <header>
     <h1>${escapeHtml(title)}</h1>
     <p>${escapeHtml(intro)}</p>
@@ -162,9 +162,14 @@ function filterSnapshotForPage(snapshot: SeoSnapshot, page: SeoPage): SeoSnapsho
   return { bodyHtml, headHtml: snapshot.headHtml };
 }
 
+const SEO_HIDE_STYLE = `<style id="tm-seo-hide">#tm-seo-prerender{display:none!important;visibility:hidden!important;position:absolute!important;left:-9999px!important}</style>`;
+
 export function injectSeoIntoHtml(template: string, snapshot: SeoSnapshot): string {
   let html = template;
-  if (snapshot.headHtml && !html.includes("application/ld+json")) {
+  if (!html.includes('id="tm-seo-hide"')) {
+    const headBits = SEO_HIDE_STYLE + (snapshot.headHtml && !html.includes("application/ld+json") ? snapshot.headHtml : "");
+    html = html.replace("</head>", `${headBits}</head>`);
+  } else if (snapshot.headHtml && !html.includes("application/ld+json")) {
     html = html.replace("</head>", `${snapshot.headHtml}</head>`);
   }
   if (snapshot.bodyHtml && !html.includes('id="tm-seo-prerender"')) {
