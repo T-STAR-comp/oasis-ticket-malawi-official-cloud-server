@@ -17,7 +17,7 @@ INSERT INTO listings (
  'Lake of Stars Foundation', 'Curating Malawi''s signature lakeside festival since 2004.', 'Three stages • Camping included • Headliners from 9 countries',
  NULL, NULL, NULL, 'published'),
 ('blantyre-lilongwe', @organizer_id, 'travel', 'Blantyre → Lilongwe', 'Executive coach, daily', 'Executive Bus',
- 'Daily', '07:00', 'Wenela Terminal arrival', 22000, '/assets/travel-bus.jpg',
+ 'Daily', '07:00', 'Wenela Terminal, Lilongwe', 22000, '/assets/travel-bus.jpg',
  'Comfortable 4h 30m intercity service with assigned seating, professional crew, and complimentary refreshments.',
  'Sososo Coaches Ltd.', 'Malawi''s premier executive travel.', 'Scania Marcopolo G8 • Climate control • On-board refreshments',
  'Blantyre', 'Lilongwe', '4h 30m', 'published'),
@@ -25,6 +25,11 @@ INSERT INTO listings (
  'Sept 12', '09:00 – 18:00', 'Amaryllis Hotel, Blantyre', 15000, '/assets/event-artsummit.jpg',
  'A focused day of talks and hands-on sessions covering product, design, and the business of digital craft in Malawi.',
  'Mzati Studio', 'Convening Malawi''s design and tech community.', '12 speakers • Workshops • Networking dinner',
+ NULL, NULL, NULL, 'published'),
+('lilongwe-jazz', @organizer_id, 'event', 'Lilongwe Jazz & Soul Night', 'An evening of live Malawian jazz', 'Concert',
+ 'Sat 20 Sep', '19:00', 'BICC, Lilongwe', 12000, '/assets/event-artsummit.jpg',
+ 'Intimate live sets from Lilongwe''s finest jazz and soul artists — perfect after a day in the capital.',
+ 'Capital Live', 'Curating nights worth staying in town for.', 'Live band • Reserved seating • Bar service',
  NULL, NULL, NULL, 'published')
 ON DUPLICATE KEY UPDATE title = VALUES(title);
 

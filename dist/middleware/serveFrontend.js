@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IMAGE_BUCKET_URL_PREFIX } from "../config/images.js";
+import { buildSeoSnapshot, injectSeoIntoHtml, seoPageForPath, } from "../utils/seo-snapshot.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 function resolveFrontendDir() {
     const candidates = [
@@ -68,10 +69,25 @@ export function registerFrontend(app, enabled) {
             }
         },
     }));
-    app.get("*", (req, res, next) => {
+    app.get("*", async (req, res, next) => {
         if (!shouldServeSpaShell(req))
             return next();
-        res.sendFile(path.join(frontendDir, "index.html"));
+        const seoPage = seoPageForPath(req.path);
+        if (!seoPage) {
+            res.sendFile(path.join(frontendDir, "index.html"));
+            return;
+        }
+        try {
+            const template = fs.readFileSync(path.join(frontendDir, "index.html"), "utf8");
+            const snapshot = await buildSeoSnapshot(seoPage);
+            const html = injectSeoIntoHtml(template, snapshot);
+            res.setHeader("Content-Type", "text/html; charset=utf-8");
+            res.send(html);
+        }
+        catch (err) {
+            console.warn("[frontend] SEO snapshot failed, serving plain SPA shell:", err);
+            res.sendFile(path.join(frontendDir, "index.html"));
+        }
     });
     console.log(`[frontend] Serving React SPA from ${frontendDir}`);
 }

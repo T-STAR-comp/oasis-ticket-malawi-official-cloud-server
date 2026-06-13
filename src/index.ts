@@ -5,6 +5,7 @@ import { ensureDefaultAdmin } from "./services/bootstrap.service.js";
 import { startPaymentPoller } from "./services/payment-poller.service.js";
 import { startReminderPoller } from "./services/reminder.service.js";
 import { startTicketExpiryPoller } from "./services/ticket-expiry.service.js";
+import { settleResellSales } from "./services/resell.service.js";
 
 async function start() {
   try {
@@ -26,6 +27,8 @@ async function start() {
     startPaymentPoller();
     startReminderPoller();
     startTicketExpiryPoller();
+    setInterval(() => void settleResellSales(), 60 * 60 * 1000);
+    void settleResellSales();
   });
 }
 

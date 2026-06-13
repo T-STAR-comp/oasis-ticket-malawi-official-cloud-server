@@ -17,6 +17,8 @@ import { reportsRouter } from "./routes/reports.routes.js";
 import { verifyRouter } from "./routes/verify.routes.js";
 import { referrerRouter } from "./routes/referrer.routes.js";
 import { careersRouter } from "./routes/careers.routes.js";
+import { resellRouter } from "./routes/resell.routes.js";
+import { selfCheckinRouter } from "./routes/self-checkin.routes.js";
 import { pool } from "./db/pool.js";
 import { LEGAL_VERSION } from "./config/legal.js";
 import { registerFrontend } from "./middleware/serveFrontend.js";
@@ -51,7 +53,7 @@ export function createApp() {
             data: {
                 paychanguMock: env.paychangu.mock,
                 mockPaymentAmountMwk: env.paychangu.mock ? env.paychangu.mockPaymentAmountMwk : null,
-                platformServiceFeeMwk: env.platformServiceFeeMwk,
+                platformServiceFeePercent: env.platformServiceFeePercent,
                 referralPayoutFeePercent: env.referrals.payoutFeePercent,
             },
         });
@@ -75,6 +77,8 @@ export function createApp() {
     app.use("/api/reports", reportsRouter);
     app.use("/api/referrer", referrerRouter);
     app.use("/api/careers", careersRouter);
+    app.use("/api/resell", resellRouter);
+    app.use("/api/self-checkin", selfCheckinRouter);
     registerFrontend(app, env.serveFrontend);
     app.use(errorHandler);
     return app;

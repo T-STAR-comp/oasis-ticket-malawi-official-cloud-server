@@ -20,6 +20,7 @@ import {
   suspendOrganizerForContent,
 } from "./moderation.service.js";
 import { formatSqlDate, parseEventDateInput } from "../utils/dates.js";
+import { assertListingLocation } from "../utils/malawi-locations.js";
 import * as ticketTiersService from "./ticket-tiers.service.js";
 import type { TicketTierInput } from "./ticket-tiers.service.js";
 
@@ -201,6 +202,32 @@ export async function listPublished(kind?: ListingKind) {
   return listings;
 }
 
+/** Upcoming published events whose venue location mentions the given city/town. */
+export async function listEventsInCity(city: string, limit = 6) {
+  const place = String(city ?? "").trim();
+  if (!place) return [];
+
+  const safeLimit = Math.min(Math.max(limit, 1), 12);
+
+  const sql = `SELECT * FROM listings
+    WHERE ${PUBLIC_VISIBILITY_SQL}
+      AND kind = 'event'
+      AND LOWER(location) LIKE :pattern
+      AND (event_starts_on IS NULL OR event_starts_on >= CURDATE())
+    ORDER BY event_starts_on ASC, created_at DESC
+    LIMIT ${safeLimit}`;
+
+  const [rows] = await pool.query<RowDataPacket[]>(sql, {
+    pattern: `%${place.toLowerCase()}%`,
+  });
+
+  const listings = [];
+  for (const r of rows) {
+    listings.push(await mapListing(r as ListingRow));
+  }
+  return listings;
+}
+
 export async function getListingById(id: string, includeDraft = false) {
   let sql = `SELECT * FROM listings WHERE id = :id`;
   if (!includeDraft) sql += ` AND ${PUBLIC_VISIBILITY_SQL}`;
@@ -324,6 +351,11 @@ export async function upsertListing(organizerId: string, body: Record<string, un
 
   const rawTiers = body.ticketTiers as TicketTierInput[] | undefined;
   const priceMwk = Number(body.price ?? 0);
+  const location = String(body.location ?? "").trim();
+  const routeFrom = (body.route as { from?: string })?.from ?? null;
+  const routeTo = (body.route as { to?: string })?.to ?? null;
+
+  assertListingLocation(kind, status, location, routeFrom, routeTo);
 
   await pool.query(
     `INSERT INTO listings (
@@ -357,15 +389,15 @@ export async function upsertListing(organizerId: string, body: Record<string, un
       eventStartsOn,
       ticketCapacity: parsedCapacity,
       timeLabel: String(body.time ?? body.timeLabel ?? ""),
-      location: String(body.location ?? ""),
+      location,
       priceMwk,
       imageUrl: nextImageUrl,
       description: String(body.description ?? ""),
       operatorName: String((body.operator as { name?: string })?.name ?? body.operatorName ?? ""),
       operatorTagline: String((body.operator as { tagline?: string })?.tagline ?? body.operatorTagline ?? ""),
       operatorDetail: String((body.operator as { detail?: string })?.detail ?? body.operatorDetail ?? ""),
-      routeFrom: (body.route as { from?: string })?.from ?? null,
-      routeTo: (body.route as { to?: string })?.to ?? null,
+      routeFrom,
+      routeTo,
       routeDuration: (body.route as { duration?: string })?.duration ?? null,
       status,
     } satisfies QueryParams,

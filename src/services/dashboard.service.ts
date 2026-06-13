@@ -21,6 +21,8 @@ export async function getUserTickets(userId: string, status?: "active" | "used" 
            l.event_starts_on, ut.ticket_tier_name,
            op.status AS organizer_status, op.flagged_at, op.flag_reason,
            op.suspension_reason,
+           rl_active.id AS resell_listing_id,
+           rl_active.price_mwk AS resell_price_mwk,
            EXISTS (
              SELECT 1 FROM ticket_refunds tr
              WHERE tr.user_ticket_id = ut.id AND tr.status = 'pending'
@@ -28,6 +30,8 @@ export async function getUserTickets(userId: string, status?: "active" | "used" 
     FROM user_tickets ut
     JOIN listings l ON l.id = ut.listing_id
     JOIN organizer_profiles op ON op.user_id = l.organizer_id
+    LEFT JOIN resell_listings rl_active
+      ON rl_active.user_ticket_id = ut.id AND rl_active.status = 'active'
     WHERE ut.user_id = :userId`;
   const params: QueryParams = { userId };
   if (status) {
@@ -75,6 +79,12 @@ export async function getUserTickets(userId: string, status?: "active" | "used" 
       ?? (organizerRestricted
         ? "There are issues with this organizer. Your ticket will be available once the issues are cleared."
         : cancelledMessage ?? postponedMessage),
+    resellListing: r.resell_listing_id
+      ? {
+          id: String(r.resell_listing_id),
+          priceMwk: Number(r.resell_price_mwk),
+        }
+      : undefined,
     ticket: {
       title: r.title,
       category: r.category,
@@ -89,15 +99,12 @@ export async function getUserTickets(userId: string, status?: "active" | "used" 
 }
 
 export async function getUserTicketDetail(userId: string, ticketId: string) {
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT * FROM user_tickets WHERE id = :ticketId AND user_id = :userId`,
-    { ticketId, userId },
-  );
-  const purchase = rows[0];
+  const tickets = await getUserTickets(userId);
+  const purchase = tickets.find((t) => t.id === ticketId);
   if (!purchase) return null;
-  const refundPending = await ticketHasPendingRefund(purchase.id as string);
-  const listing = await getListingById(purchase.listing_id as string, true);
-  return { purchase: { ...purchase, refund_pending: refundPending ? 1 : 0 }, listing };
+  const listing = await getListingById(purchase.ticketId, true);
+  if (!listing) return null;
+  return { purchase, listing };
 }
 
 export async function getSpendingSummary(userId: string) {
@@ -186,6 +193,18 @@ export async function shareTicket(
     if (pendingRefund.length > 0) {
       throw new Error(
         "This ticket has a refund in progress. Sharing is disabled until the refund completes.",
+      );
+    }
+
+    const [activeResell] = await conn.query<RowDataPacket[]>(
+      `SELECT 1 FROM resell_listings
+       WHERE user_ticket_id = :userTicketId AND status = 'active'
+       LIMIT 1`,
+      { userTicketId },
+    );
+    if (activeResell.length > 0) {
+      throw new Error(
+        "This ticket is listed for resale. Cancel the listing before sharing.",
       );
     }
 

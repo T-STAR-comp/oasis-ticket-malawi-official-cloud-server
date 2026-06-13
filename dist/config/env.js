@@ -59,7 +59,7 @@ export const env = {
     },
     /** Serve the React build from public/ (same origin as /api). */
     serveFrontend: process.env.SERVE_FRONTEND === "true" || process.env.NODE_ENV === "production",
-    platformServiceFeeMwk: Number(process.env.PLATFORM_SERVICE_FEE_MWK ?? 500),
+    platformServiceFeePercent: Number(process.env.PLATFORM_SERVICE_FEE_PERCENT ?? 5),
     referrals: {
         payoutFeePercent: Number(process.env.REFERRAL_PAYOUT_FEE_PERCENT ?? 2),
     },

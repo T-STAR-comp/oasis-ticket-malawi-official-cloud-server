@@ -8,6 +8,7 @@ import { replaceListingImageIfManaged } from "./image-upload.service.js";
 import { isManagedImagePath } from "../config/images.js";
 import { assertOrganizerCanMutate, containsExplicitContent, getOrganizerModerationState, suspendOrganizerForContent, } from "./moderation.service.js";
 import { formatSqlDate, parseEventDateInput } from "../utils/dates.js";
+import { assertListingLocation } from "../utils/malawi-locations.js";
 import * as ticketTiersService from "./ticket-tiers.service.js";
 function formatEventDateLabel(isoDate) {
     const d = new Date(`${isoDate.slice(0, 10)}T12:00:00`);
@@ -149,6 +150,28 @@ export async function listPublished(kind) {
     }
     return listings;
 }
+/** Upcoming published events whose venue location mentions the given city/town. */
+export async function listEventsInCity(city, limit = 6) {
+    const place = String(city ?? "").trim();
+    if (!place)
+        return [];
+    const safeLimit = Math.min(Math.max(limit, 1), 12);
+    const sql = `SELECT * FROM listings
+    WHERE ${PUBLIC_VISIBILITY_SQL}
+      AND kind = 'event'
+      AND LOWER(location) LIKE :pattern
+      AND (event_starts_on IS NULL OR event_starts_on >= CURDATE())
+    ORDER BY event_starts_on ASC, created_at DESC
+    LIMIT ${safeLimit}`;
+    const [rows] = await pool.query(sql, {
+        pattern: `%${place.toLowerCase()}%`,
+    });
+    const listings = [];
+    for (const r of rows) {
+        listings.push(await mapListing(r));
+    }
+    return listings;
+}
 export async function getListingById(id, includeDraft = false) {
     let sql = `SELECT * FROM listings WHERE id = :id`;
     if (!includeDraft)
@@ -238,6 +261,10 @@ export async function upsertListing(organizerId, body) {
     }
     const rawTiers = body.ticketTiers;
     const priceMwk = Number(body.price ?? 0);
+    const location = String(body.location ?? "").trim();
+    const routeFrom = body.route?.from ?? null;
+    const routeTo = body.route?.to ?? null;
+    assertListingLocation(kind, status, location, routeFrom, routeTo);
     await pool.query(`INSERT INTO listings (
       id, organizer_id, kind, title, subtitle, category, date_label, event_starts_on, ticket_capacity,
       time_label, location,
@@ -268,15 +295,15 @@ export async function upsertListing(organizerId, body) {
         eventStartsOn,
         ticketCapacity: parsedCapacity,
         timeLabel: String(body.time ?? body.timeLabel ?? ""),
-        location: String(body.location ?? ""),
+        location,
         priceMwk,
         imageUrl: nextImageUrl,
         description: String(body.description ?? ""),
         operatorName: String(body.operator?.name ?? body.operatorName ?? ""),
         operatorTagline: String(body.operator?.tagline ?? body.operatorTagline ?? ""),
         operatorDetail: String(body.operator?.detail ?? body.operatorDetail ?? ""),
-        routeFrom: body.route?.from ?? null,
-        routeTo: body.route?.to ?? null,
+        routeFrom,
+        routeTo,
         routeDuration: body.route?.duration ?? null,
         status,
     });

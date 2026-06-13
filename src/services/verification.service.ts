@@ -3,7 +3,7 @@ import { v4 as uuid } from "uuid";
 import { pool } from "../db/pool.js";
 import { listingBelongsToOrganizer } from "./listings.service.js";
 
-export type VerifyMethod = "reference" | "qr_scan";
+export type VerifyMethod = "reference" | "qr_scan" | "self_checkin";
 
 export type VerifyResult = {
   success: boolean;
@@ -216,6 +216,11 @@ async function assertCanVerifyListing(
   if (await listingBelongsToOrganizer(listingId, userId)) return "organizer";
   if (await hasVerifierAccess(userId, listingId)) return "verifier";
   throw new Error("You do not have permission to verify tickets for this listing.");
+}
+
+export async function canVerifyListing(userId: string, listingId: string): Promise<boolean> {
+  if (await listingBelongsToOrganizer(listingId, userId)) return true;
+  return hasVerifierAccess(userId, listingId);
 }
 
 async function loadTicketRow(ticketId: string): Promise<TicketRow | null> {

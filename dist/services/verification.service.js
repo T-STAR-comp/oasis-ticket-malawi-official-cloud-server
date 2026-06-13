@@ -138,6 +138,11 @@ async function assertCanVerifyListing(userId, userRole, listingId) {
         return "verifier";
     throw new Error("You do not have permission to verify tickets for this listing.");
 }
+export async function canVerifyListing(userId, listingId) {
+    if (await listingBelongsToOrganizer(listingId, userId))
+        return true;
+    return hasVerifierAccess(userId, listingId);
+}
 async function loadTicketRow(ticketId) {
     const [rows] = await pool.query(`SELECT ut.*, l.title AS listing_title, l.organizer_id, o.contact_name
      FROM user_tickets ut

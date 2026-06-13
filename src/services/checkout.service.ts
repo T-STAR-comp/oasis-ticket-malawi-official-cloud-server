@@ -34,9 +34,16 @@ import {
   recordReferralEarning,
   resolveActiveReferral,
 } from "./referral.service.js";
+import { getProfile } from "./auth.service.js";
+import { getPaymentMethodForUser, addPaymentMethod } from "./payment-methods.service.js";
+import { normalizeMalawiPhone } from "../utils/phone.js";
+import { fulfillResellSale } from "./resell.service.js";
+import {
+  computePlatformServiceFee,
+} from "../utils/platform-fee.js";
 
-function platformServiceFee(): number {
-  return env.platformServiceFeeMwk;
+function platformServiceFeeForSubtotal(subtotalMwk: number): number {
+  return computePlatformServiceFee(subtotalMwk);
 }
 
 export type CheckoutInput = {
@@ -45,9 +52,11 @@ export type CheckoutInput = {
   tierId?: string;
   paymentMethod: "airtel" | "tnm" | "card";
   paymentPhone?: string;
-  contactName: string;
-  contactEmail: string;
-  contactPhone: string;
+  paymentMethodId?: string;
+  savePaymentMethod?: boolean;
+  contactName?: string;
+  contactEmail?: string;
+  contactPhone?: string;
   nationalId?: string;
   queueId?: string;
   referralCode?: string;
@@ -61,6 +70,32 @@ function makeQrToken(): string {
   return uuid().replace(/-/g, "");
 }
 
+async function resolveCheckoutIdentity(userId: string, input: CheckoutInput) {
+  const profile = await getProfile(userId);
+  if (!profile) throw new Error("Account not found");
+
+  let paymentPhone = input.paymentPhone;
+  if (input.paymentMethodId) {
+    const method = await getPaymentMethodForUser(userId, input.paymentMethodId);
+    if (!method?.phoneNumber) throw new Error("Saved payment method not found");
+    if (method.type !== input.paymentMethod) {
+      throw new Error("Selected payment method does not match operator");
+    }
+    paymentPhone = method.phoneNumber;
+  } else {
+    paymentPhone = normalizeMalawiPhone(paymentPhone ?? "") ?? undefined;
+  }
+  if (!paymentPhone) throw new Error("Mobile money number is required");
+
+  return {
+    contactName: input.contactName?.trim() || String(profile.full_name),
+    contactEmail: input.contactEmail?.trim() || String(profile.email),
+    contactPhone: input.contactPhone?.trim() || String(profile.phone ?? paymentPhone),
+    paymentPhone,
+    nationalId: input.nationalId?.trim() || undefined,
+  };
+}
+
 async function pricingForCheckout(
   lineCount: number,
   unitPrice: number,
@@ -68,7 +103,7 @@ async function pricingForCheckout(
   referralCode?: string,
 ) {
   const catalogSubtotal = unitPrice * lineCount;
-  const catalogServiceFee = platformServiceFee();
+  const catalogServiceFee = platformServiceFeeForSubtotal(catalogSubtotal);
 
   const referral = await resolveActiveReferral(listingId, referralCode);
   if (referral) {
@@ -172,9 +207,9 @@ export async function initiateCheckout(
   if (input.paymentMethod === "card") {
     throw new Error("Card payments via PayChangu are not enabled yet. Use Airtel or TNM.");
   }
-  if (!input.paymentPhone) {
-    throw new Error("Mobile money number is required");
-  }
+
+  const identity = await resolveCheckoutIdentity(userId, input);
+  const checkoutInput: CheckoutInput = { ...input, ...identity };
 
   const listing = await getListingById(listingId, true);
   if (!listing) throw new Error("Listing not found");
@@ -236,7 +271,7 @@ export async function initiateCheckout(
       userId,
       listingId,
       listing,
-      input,
+      checkoutInput,
       conn,
       unitPrice,
       selectedTier,
@@ -319,8 +354,8 @@ async function createCheckoutWithPayChangu(
     amount: total,
     mobile: input.paymentPhone!,
     operator: input.paymentMethod as MomoOperator,
-    email: input.contactEmail,
-    fullName: input.contactName,
+    email: input.contactEmail!,
+    fullName: input.contactName!,
   });
 
   const timeoutSec = env.paychangu.pendingTimeoutSec;
@@ -464,6 +499,25 @@ export async function getOrderPaymentStatus(userId: string, orderId: string) {
       qrToken: t.qr_token as string,
       seat: t.seat_number ? String(t.seat_number) : undefined,
     }));
+
+    if (tickets.length === 0) {
+      const meta = parseCheckoutMeta(refreshedLedger);
+      const resaleTicketId = meta.userTicketId as string | undefined;
+      if (resaleTicketId) {
+        const [resaleRows] = await pool.query<RowDataPacket[]>(
+          `SELECT id, reference, qr_token, seat_number
+           FROM user_tickets
+           WHERE id = :ticketId AND user_id = :userId`,
+          { ticketId: resaleTicketId, userId },
+        );
+        tickets = resaleRows.map((t) => ({
+          id: t.id as string,
+          reference: t.reference as string,
+          qrToken: t.qr_token as string,
+          seat: t.seat_number ? String(t.seat_number) : undefined,
+        }));
+      }
+    }
   }
 
   return {
@@ -577,6 +631,14 @@ async function fulfillCheckout(ledger: LedgerRow) {
     }
 
     const meta = parseCheckoutMeta(ledger);
+    if (meta.resellListingId) {
+      const resellResult = await fulfillResellSale(ledger, conn);
+      if (resellResult) {
+        await conn.commit();
+        return resellResult;
+      }
+    }
+
     const listingId = String(meta.listingId ?? order.listing_id);
     const seatNumbers = (meta.seatNumbers as number[]) ?? [];
     const lineCount = Number(meta.lineCount ?? meta.qty ?? 1);
@@ -587,7 +649,9 @@ async function fulfillCheckout(ledger: LedgerRow) {
     const tierId = (meta.tierId as string | null) ?? null;
     const tierName = (meta.tierName as string | null) ?? null;
     const catalogSubtotal = Number(meta.subtotal ?? unitPrice * lineCount);
-    const catalogServiceFee = Number(meta.serviceFee ?? platformServiceFee());
+    const catalogServiceFee = Number(
+      meta.serviceFee ?? platformServiceFeeForSubtotal(catalogSubtotal),
+    );
     const catalogTotal = Number(meta.catalogTotal ?? catalogSubtotal + catalogServiceFee);
     const subtotal = catalogSubtotal;
     const ticketIds: string[] = [];
@@ -630,7 +694,7 @@ async function fulfillCheckout(ledger: LedgerRow) {
             reference: order.reference,
             qrToken,
             seatNumber: num,
-            amount: unitPrice + Math.floor(catalogServiceFee / lineCount),
+            amount: unitPrice,
           },
         );
         ticketIds.push(ticketId);
@@ -650,16 +714,10 @@ async function fulfillCheckout(ledger: LedgerRow) {
         },
       );
 
-      const perTicketAmount =
-        Math.floor(catalogTotal / lineCount) +
-        (catalogTotal % lineCount > 0 ? 1 : 0);
       for (let i = 0; i < lineCount; i++) {
         const ticketId = uuid();
         const qrToken = makeQrToken();
-        const amount =
-          i === lineCount - 1
-            ? catalogTotal - perTicketAmount * (lineCount - 1)
-            : perTicketAmount;
+        const amount = unitPrice;
         await conn.query(
           `INSERT INTO user_tickets (
              id, user_id, order_id, listing_id, ticket_tier_id, ticket_tier_name,

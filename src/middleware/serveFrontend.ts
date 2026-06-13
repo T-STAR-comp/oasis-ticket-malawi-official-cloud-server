@@ -4,6 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IMAGE_BUCKET_URL_PREFIX } from "../config/images.js";
+import {
+  buildSeoSnapshot,
+  injectSeoIntoHtml,
+  seoPageForPath,
+} from "../utils/seo-snapshot.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -80,9 +85,25 @@ export function registerFrontend(app: Express, enabled: boolean) {
     }),
   );
 
-  app.get("*", (req: Request, res: Response, next: NextFunction) => {
+  app.get("*", async (req: Request, res: Response, next: NextFunction) => {
     if (!shouldServeSpaShell(req)) return next();
-    res.sendFile(path.join(frontendDir, "index.html"));
+
+    const seoPage = seoPageForPath(req.path);
+    if (!seoPage) {
+      res.sendFile(path.join(frontendDir, "index.html"));
+      return;
+    }
+
+    try {
+      const template = fs.readFileSync(path.join(frontendDir, "index.html"), "utf8");
+      const snapshot = await buildSeoSnapshot(seoPage);
+      const html = injectSeoIntoHtml(template, snapshot);
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
+    } catch (err) {
+      console.warn("[frontend] SEO snapshot failed, serving plain SPA shell:", err);
+      res.sendFile(path.join(frontendDir, "index.html"));
+    }
   });
 
   console.log(`[frontend] Serving React SPA from ${frontendDir}`);
