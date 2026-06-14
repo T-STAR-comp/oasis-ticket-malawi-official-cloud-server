@@ -160,7 +160,7 @@ export async function listEventsInCity(city, limit = 6) {
     WHERE ${PUBLIC_VISIBILITY_SQL}
       AND kind = 'event'
       AND LOWER(location) LIKE :pattern
-      AND (event_starts_on IS NULL OR event_starts_on >= CURDATE())
+      AND (event_starts_on IS NULL OR event_starts_on >= DATE_SUB(CURDATE(), INTERVAL 1 DAY))
     ORDER BY event_starts_on ASC, created_at DESC
     LIMIT ${safeLimit}`;
     const [rows] = await pool.query(sql, {

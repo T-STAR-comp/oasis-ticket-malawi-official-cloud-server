@@ -14,9 +14,10 @@ export const PUBLIC_VISIBILITY_SQL = `
     status = 'published'
     OR (
       status IN ('sold_out', 'cancelled', 'postponed')
-      AND (event_starts_on IS NULL OR event_starts_on >= CURDATE())
+      AND (event_starts_on IS NULL OR event_starts_on >= DATE_SUB(CURDATE(), INTERVAL 1 DAY))
     )
   )
+  AND (kind != 'event' OR event_starts_on IS NULL OR event_starts_on >= DATE_SUB(CURDATE(), INTERVAL 1 DAY))
   AND ${ORGANIZER_PUBLIC_SQL}
 `;
 export function isPurchasableStatus(status) {
