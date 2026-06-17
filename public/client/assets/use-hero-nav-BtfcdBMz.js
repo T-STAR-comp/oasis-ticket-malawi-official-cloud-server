@@ -1,0 +1,1 @@
+import{z as e}from"./index-bZjnqdpn.js";function i(){const r=e.useRef(null),[o,s]=e.useState(!1);return e.useEffect(()=>{const t=r.current;if(!t)return;const n=new IntersectionObserver(([c])=>s(!c.isIntersecting),{threshold:0,rootMargin:"-72px 0px -45% 0px"});return n.observe(t),()=>n.disconnect()},[]),{heroRef:r,navSolid:o}}export{i as u};
