@@ -1,5 +1,6 @@
 import { Router } from "express";
 import * as dashboardService from "../services/dashboard.service.js";
+import { getVirtualTransferLockState } from "../utils/virtual-events.js";
 import * as resellService from "../services/resell.service.js";
 import * as resellerPayoutService from "../services/reseller-payout.service.js";
 import * as paymentMethodsService from "../services/payment-methods.service.js";
@@ -60,6 +61,14 @@ dashboardRouter.get("/tickets/:id/share/recipient", async (req, res, next) => {
         }
         if (detail.purchase.resellListing) {
             return fail(res, "This ticket is listed for resale. Cancel the listing before sharing.", 400);
+        }
+        const transferLock = getVirtualTransferLockState({
+            eventFormat: detail.listing.eventFormat,
+            eventStartsOn: detail.listing.eventStartsOn,
+            timeLabel: detail.listing.time,
+        });
+        if (transferLock.locked) {
+            return fail(res, transferLock.message, 400);
         }
         const recipient = await dashboardService.lookupShareRecipient(user.id, email);
         return ok(res, recipient);

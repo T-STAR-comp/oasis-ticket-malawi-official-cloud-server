@@ -42,10 +42,13 @@ export function extractMalawiPlace(text) {
     }
     return null;
 }
-export function assertListingLocation(kind, status, location, routeFrom, routeTo) {
+export function assertListingLocation(kind, status, location, routeFrom, routeTo, eventFormat = "physical") {
     const publishing = status === "published" || status === "sold_out";
     if (!publishing)
         return;
+    if (kind === "event" && eventFormat === "virtual") {
+        return;
+    }
     const loc = location.trim();
     if (kind === "event") {
         if (!loc) {

@@ -98,7 +98,7 @@ export async function performSelfCheckin(holderUserId, userTicketId, gatePayload
         if (!session || String(session.gate_token) !== parsed.gateToken) {
             throw new Error("Self check-in is not active or gate code is invalid");
         }
-        const [tickets] = await conn.query(`SELECT ut.*, u.full_name, l.title AS listing_title
+        const [tickets] = await conn.query(`SELECT ut.*, u.full_name, l.title AS listing_title, l.event_format
        FROM user_tickets ut
        JOIN users u ON u.id = ut.user_id
        JOIN listings l ON l.id = ut.listing_id
@@ -107,6 +107,9 @@ export async function performSelfCheckin(holderUserId, userTicketId, gatePayload
         const ticket = tickets[0];
         if (!ticket)
             throw new Error("Ticket not found");
+        if (String(ticket.event_format ?? "physical") === "virtual") {
+            throw new Error("Self check-in is not available for virtual events. Use Go to virtual event on your ticket.");
+        }
         const listingId = String(session.listing_id);
         if (String(ticket.listing_id) !== listingId) {
             await logSelfCheckinEvent(conn, {

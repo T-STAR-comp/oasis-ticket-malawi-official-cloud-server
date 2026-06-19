@@ -2,6 +2,7 @@ import type { RowDataPacket } from "mysql2";
 import { v4 as uuid } from "uuid";
 import { env } from "../config/env.js";
 import { pool, type QueryParams } from "../db/pool.js";
+import { assertVirtualTicketTransferAllowed } from "../utils/virtual-events.js";
 import { getProfile } from "./auth.service.js";
 import { getListingById } from "./listings.service.js";
 import {
@@ -50,7 +51,7 @@ function makeChargeId(ledgerId: string): string {
 
 async function assertTicketResellable(userId: string, userTicketId: string) {
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT ut.*, l.status AS listing_status, l.kind, l.event_starts_on,
+    `SELECT ut.*, l.status AS listing_status, l.kind, l.event_starts_on, l.event_format, l.time_label,
             op.status AS organizer_status, op.flagged_at,
             EXISTS (SELECT 1 FROM ticket_refunds tr WHERE tr.user_ticket_id = ut.id AND tr.status = 'pending') AS refund_pending,
             EXISTS (SELECT 1 FROM resell_listings rl WHERE rl.user_ticket_id = ut.id AND rl.status = 'active') AS already_listed
@@ -72,6 +73,11 @@ async function assertTicketResellable(userId: string, userTicketId: string) {
   if (String(t.listing_status) === "cancelled") {
     throw new Error("Cancelled events cannot be resold");
   }
+  assertVirtualTicketTransferAllowed({
+    eventFormat: t.event_format,
+    eventStartsOn: t.event_starts_on,
+    timeLabel: t.time_label,
+  });
   return t;
 }
 

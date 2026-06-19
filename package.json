@@ -29,6 +29,7 @@
     "db:migrate:tiers": "node scripts/run-sql.js database/migration-v14-ticket-tiers-login.sql",
     "db:migrate:login": "node scripts/run-sql.js database/migration-v15-login-purpose.sql",
     "db:migrate:marketplace": "node scripts/run-sql.js database/migration-v16-resell-selfcheckin.sql",
+    "db:migrate:virtual": "node scripts/run-sql.js database/migration-v17-virtual-events.sql",
     "photos:optimize": "node scripts/optimize-marketing-photos.mjs"
   },
   "dependencies": {

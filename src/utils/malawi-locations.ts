@@ -51,9 +51,14 @@ export function assertListingLocation(
   location: string,
   routeFrom: string | null | undefined,
   routeTo: string | null | undefined,
+  eventFormat: "physical" | "virtual" = "physical",
 ): void {
   const publishing = status === "published" || status === "sold_out";
   if (!publishing) return;
+
+  if (kind === "event" && eventFormat === "virtual") {
+    return;
+  }
 
   const loc = location.trim();
   if (kind === "event") {

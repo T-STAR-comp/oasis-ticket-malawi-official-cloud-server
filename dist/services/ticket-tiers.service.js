@@ -80,7 +80,7 @@ export async function assertTierCheckoutCapacity(tierId, requestedUnits) {
     }
     return tier;
 }
-export async function saveTiersForListing(listingId, kind, tiers, fallbackPrice) {
+export async function saveTiersForListing(listingId, kind, tiers, fallbackPrice, eventFormat = "physical") {
     if (kind !== "event") {
         await pool.query(`DELETE FROM listing_ticket_tiers WHERE listing_id = :listingId`, {
             listingId,
@@ -89,7 +89,13 @@ export async function saveTiersForListing(listingId, kind, tiers, fallbackPrice)
     }
     const normalized = tiers && tiers.length > 0
         ? tiers
-        : [{ name: "Standard", priceMwk: fallbackPrice, sortOrder: 0 }];
+        : [{ name: "General Admission", priceMwk: fallbackPrice, sortOrder: 0 }];
+    if (eventFormat === "virtual" && normalized.length > 1) {
+        throw new Error("Virtual events support one ticket tier only.");
+    }
+    if (eventFormat === "virtual" && normalized[0] && !normalized[0].name.trim()) {
+        normalized[0].name = "General Admission";
+    }
     for (const tier of normalized) {
         if (!tier.name.trim())
             throw new Error("Each ticket type needs a name");

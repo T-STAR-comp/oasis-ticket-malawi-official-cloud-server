@@ -2,6 +2,7 @@ import { v4 as uuid } from "uuid";
 import { pool } from "../db/pool.js";
 import * as emailService from "./email.service.js";
 import { getListingById } from "./listings.service.js";
+import { assertVirtualTicketTransferAllowed, getVirtualAccessState, } from "../utils/virtual-events.js";
 function isMissingTableError(err) {
     return (err instanceof Error &&
         (err.message.includes("doesn't exist") || err.message.includes("Unknown table")));
@@ -9,7 +10,8 @@ function isMissingTableError(err) {
 const BASE_TICKETS_SQL = `
     SELECT ut.*, l.title, l.category, l.date_label, l.time_label, l.kind, l.image_url,
            l.operator_name, l.location, l.organizer_id, l.status AS listing_status,
-           l.event_starts_on, ut.ticket_tier_name,
+           l.event_starts_on, l.event_format, l.virtual_meeting_url, l.virtual_duration_minutes,
+           ut.ticket_tier_name,
            op.status AS organizer_status, op.flagged_at, op.flag_reason,
            op.suspension_reason
     FROM user_tickets ut
@@ -18,7 +20,8 @@ const BASE_TICKETS_SQL = `
 const EXTENDED_TICKETS_SQL = `
     SELECT ut.*, l.title, l.category, l.date_label, l.time_label, l.kind, l.image_url,
            l.operator_name, l.location, l.organizer_id, l.status AS listing_status,
-           l.event_starts_on, ut.ticket_tier_name,
+           l.event_starts_on, l.event_format, l.virtual_meeting_url, l.virtual_duration_minutes,
+           ut.ticket_tier_name,
            op.status AS organizer_status, op.flagged_at, op.flag_reason,
            op.suspension_reason,
            rl_active.id AS resell_listing_id,
@@ -76,6 +79,19 @@ function mapUserTicketRow(r) {
     const refundPendingMessage = refundPending
         ? "A refund is being processed for this ticket. Sharing is disabled until the refund completes."
         : undefined;
+    const eventFormat = String(r.event_format ?? "physical");
+    const virtualAccess = getVirtualAccessState({
+        eventFormat,
+        eventStartsOn: r.event_starts_on,
+        timeLabel: String(r.time_label ?? ""),
+        virtualDurationMinutes: r.virtual_duration_minutes != null ? Number(r.virtual_duration_minutes) : null,
+        ticketStatus: String(r.status),
+    });
+    const virtualMeetingUrl = eventFormat === "virtual" &&
+        virtualAccess.canAccessLink &&
+        r.virtual_meeting_url
+        ? String(r.virtual_meeting_url)
+        : undefined;
     return {
         id: r.id,
         ticketId: r.listing_id,
@@ -111,7 +127,13 @@ function mapUserTicketRow(r) {
             image: r.image_url,
             operator: { name: r.operator_name },
             location: r.location,
+            eventFormat,
+            time: r.time_label ? String(r.time_label) : undefined,
+            eventStartsOn: r.event_starts_on ? String(r.event_starts_on).slice(0, 10) : undefined,
+            virtualDurationMinutes: r.virtual_duration_minutes != null ? Number(r.virtual_duration_minutes) : undefined,
         },
+        virtualMeetingUrl,
+        virtualAccess,
     };
 }
 export async function getUserTickets(userId, status) {
@@ -168,7 +190,8 @@ export async function shareTicket(sharerUserId, userTicketId, recipientEmail) {
     try {
         await conn.beginTransaction();
         const [ticketRows] = await conn.query(`SELECT ut.*, u.full_name AS owner_name, u.email AS owner_email,
-              l.title AS listing_title, l.date_label
+              l.title AS listing_title, l.date_label,
+              l.event_format, l.event_starts_on, l.time_label
        FROM user_tickets ut
        JOIN users u ON u.id = ut.user_id
        JOIN listings l ON l.id = ut.listing_id
@@ -190,6 +213,11 @@ export async function shareTicket(sharerUserId, userTicketId, recipientEmail) {
         if (activeResell.length > 0) {
             throw new Error("This ticket is listed for resale. Cancel the listing before sharing.");
         }
+        assertVirtualTicketTransferAllowed({
+            eventFormat: ticket.event_format,
+            eventStartsOn: ticket.event_starts_on,
+            timeLabel: ticket.time_label,
+        });
         await conn.query(`UPDATE user_tickets SET user_id = :recipientId WHERE id = :userTicketId`, { recipientId: recipient.userId, userTicketId });
         if (ticket.seat_number != null && ticket.listing_id) {
             await conn.query(`UPDATE seats s

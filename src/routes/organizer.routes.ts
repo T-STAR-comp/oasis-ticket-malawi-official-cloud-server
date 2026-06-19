@@ -14,6 +14,19 @@ import {
 } from "../services/image-upload.service.js";
 import * as referralService from "../services/referral.service.js";
 import { fail, ok } from "../utils/http.js";
+import type { NextFunction, Response } from "express";
+
+function forwardListingMutationError(err: unknown, res: Response, next: NextFunction) {
+  if (!(err instanceof Error)) return next(err);
+  const message = err.message;
+  if (message.includes("organizer account") || message.includes("suspended")) {
+    return fail(res, message, 403);
+  }
+  if (message === "Listing not found") {
+    return fail(res, message, 404);
+  }
+  return fail(res, message, 400);
+}
 
 export const organizerRouter = Router();
 
@@ -108,13 +121,7 @@ organizerRouter.post("/listings", async (req, res, next) => {
     const listing = await listingsService.upsertListing(user.id, req.body);
     return ok(res, listing, 201);
   } catch (err) {
-    if (err instanceof Error && err.message.includes("organizer account")) {
-      return fail(res, err.message, 403);
-    }
-    if (err instanceof Error && err.message.includes("seat layout")) {
-      return fail(res, err.message, 400);
-    }
-    next(err);
+    forwardListingMutationError(err, res, next);
   }
 });
 
@@ -137,13 +144,7 @@ organizerRouter.patch("/listings/:id", async (req, res, next) => {
     });
     return ok(res, listing);
   } catch (err) {
-    if (err instanceof Error && err.message.includes("organizer account")) {
-      return fail(res, err.message, 403);
-    }
-    if (err instanceof Error && err.message.includes("seat layout")) {
-      return fail(res, err.message, 400);
-    }
-    next(err);
+    forwardListingMutationError(err, res, next);
   }
 });
 

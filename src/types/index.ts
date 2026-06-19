@@ -1,5 +1,6 @@
 export type UserRole = "customer" | "organizer" | "admin";
 export type ListingKind = "event" | "travel";
+export type EventFormat = "physical" | "virtual";
 export type ListingStatus = "published" | "draft" | "postponed" | "cancelled" | "sold_out";
 export type SeatStatus = "available" | "taken" | "unavailable";
 export type UserTicketStatus = "active" | "used" | "expired";
@@ -17,6 +18,7 @@ export interface ListingRow {
   id: string;
   organizer_id: string;
   kind: ListingKind;
+  event_format?: EventFormat;
   title: string;
   subtitle: string;
   category: string;
@@ -25,6 +27,8 @@ export interface ListingRow {
   ticket_capacity?: number | null;
   time_label: string;
   location: string;
+  virtual_meeting_url?: string | null;
+  virtual_duration_minutes?: number | null;
   price_mwk: number;
   image_url: string;
   description: string;

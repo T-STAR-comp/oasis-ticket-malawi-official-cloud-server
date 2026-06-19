@@ -21,8 +21,23 @@ import {
 } from "./moderation.service.js";
 import { formatSqlDate, parseEventDateInput } from "../utils/dates.js";
 import { assertListingLocation } from "../utils/malawi-locations.js";
+import {
+  assertVirtualMeetingUrl,
+  isVirtualEventPubliclyVisible,
+  assertVirtualEventPurchasable,
+  type EventFormat,
+} from "../utils/virtual-events.js";
 import * as ticketTiersService from "./ticket-tiers.service.js";
 import type { TicketTierInput } from "./ticket-tiers.service.js";
+
+function isListingRowPubliclyVisible(row: ListingRow, now = new Date()): boolean {
+  if ((row.event_format ?? "physical") !== "virtual") return true;
+  return isVirtualEventPubliclyVisible({
+    eventStartsOn: row.event_starts_on,
+    timeLabel: row.time_label ?? "",
+    now,
+  });
+}
 
 function formatEventDateLabel(isoDate: string) {
   const d = new Date(`${isoDate.slice(0, 10)}T12:00:00`);
@@ -110,13 +125,20 @@ async function attachTicketTiers<T extends Record<string, unknown>>(
 
 export async function assertListingEventDateActive(listingId: string) {
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT kind, event_starts_on FROM listings WHERE id = :listingId LIMIT 1`,
+    `SELECT kind, event_format, event_starts_on, time_label FROM listings WHERE id = :listingId LIMIT 1`,
     { listingId },
   );
   const row = rows[0];
   if (!row || row.kind !== "event") return;
   if (!row.event_starts_on) {
     throw new Error("This event does not have a valid date.");
+  }
+  if ((row.event_format ?? "physical") === "virtual") {
+    assertVirtualEventPurchasable({
+      eventStartsOn: row.event_starts_on as string,
+      timeLabel: String(row.time_label ?? ""),
+    });
+    return;
   }
   const [dateRows] = await pool.query<RowDataPacket[]>(
     `SELECT (event_starts_on >= CURDATE()) AS isActive FROM listings WHERE id = :listingId`,
@@ -127,10 +149,16 @@ export async function assertListingEventDateActive(listingId: string) {
   }
 }
 
-async function mapListing(row: ListingRow, seats?: SeatRow[]) {
+async function mapListing(
+  row: ListingRow,
+  seats?: SeatRow[],
+  opts?: { exposeVirtualUrl?: boolean },
+) {
+  const eventFormat = (row.event_format ?? "physical") as EventFormat;
   const listing = {
     id: row.id,
     kind: row.kind,
+    eventFormat,
     title: row.title,
     subtitle: row.subtitle,
     category: row.category,
@@ -138,6 +166,11 @@ async function mapListing(row: ListingRow, seats?: SeatRow[]) {
     eventStartsOn: formatSqlDate(row.event_starts_on),
     time: row.time_label,
     location: row.location,
+    virtualDurationMinutes:
+      row.virtual_duration_minutes != null ? Number(row.virtual_duration_minutes) : undefined,
+    ...(opts?.exposeVirtualUrl && row.virtual_meeting_url
+      ? { virtualMeetingUrl: row.virtual_meeting_url }
+      : {}),
     price: row.price_mwk,
     image: row.image_url,
     description: row.description,
@@ -197,6 +230,7 @@ export async function listPublished(kind?: ListingKind) {
   const [rows] = await pool.query<RowDataPacket[]>(sql, params);
   const listings = [];
   for (const r of rows) {
+    if (!isListingRowPubliclyVisible(r as ListingRow)) continue;
     listings.push(await mapListing(r as ListingRow));
   }
   return listings;
@@ -223,17 +257,23 @@ export async function listEventsInCity(city: string, limit = 6) {
 
   const listings = [];
   for (const r of rows) {
+    if (!isListingRowPubliclyVisible(r as ListingRow)) continue;
     listings.push(await mapListing(r as ListingRow));
   }
   return listings;
 }
 
-export async function getListingById(id: string, includeDraft = false) {
+export async function getListingById(
+  id: string,
+  includeDraft = false,
+  opts?: { exposeVirtualUrl?: boolean },
+) {
   let sql = `SELECT * FROM listings WHERE id = :id`;
   if (!includeDraft) sql += ` AND ${PUBLIC_VISIBILITY_SQL}`;
   const [rows] = await pool.query<RowDataPacket[]>(sql, { id });
   const row = rows[0] as ListingRow | undefined;
   if (!row) return null;
+  if (!includeDraft && !isListingRowPubliclyVisible(row)) return null;
 
   if (row.kind === "travel") {
     const [seatRows] = await pool.query<RowDataPacket[]>(
@@ -244,10 +284,10 @@ export async function getListingById(id: string, includeDraft = false) {
        ORDER BY s.seat_number`,
       { id },
     );
-    return mapListing(row, seatRows as SeatRow[]);
+    return mapListing(row, seatRows as SeatRow[], opts);
   }
 
-  return mapListing(row);
+  return mapListing(row, undefined, opts);
 }
 
 export async function getOrganizerListings(organizerId: string) {
@@ -261,7 +301,7 @@ export async function getOrganizerListings(organizerId: string) {
       const full = await getListingById(row.id as string, true);
       if (full) listings.push(full);
     } else {
-      listings.push(await mapListing(row as ListingRow));
+      listings.push(await mapListing(row as ListingRow, undefined, { exposeVirtualUrl: true }));
     }
   }
   return listings;
@@ -351,29 +391,55 @@ export async function upsertListing(organizerId: string, body: Record<string, un
 
   const rawTiers = body.ticketTiers as TicketTierInput[] | undefined;
   const priceMwk = Number(body.price ?? 0);
-  const location = String(body.location ?? "").trim();
+  const rawFormat = String(body.eventFormat ?? body.event_format ?? "physical");
+  const eventFormat: EventFormat =
+    kind === "event" && rawFormat === "virtual" ? "virtual" : "physical";
+
+  let virtualMeetingUrl: string | null = null;
+  let virtualDurationMinutes: number | null = null;
+
+  if (eventFormat === "virtual") {
+    if (kind !== "event") {
+      throw new Error("Only events can be virtual.");
+    }
+    virtualMeetingUrl = assertVirtualMeetingUrl(
+      String(body.virtualMeetingUrl ?? body.virtual_meeting_url ?? ""),
+    );
+    const rawDuration = body.virtualDurationMinutes ?? body.virtual_duration_minutes;
+    const duration = Number(rawDuration);
+    if (!Number.isFinite(duration) || duration < 15) {
+      throw new Error("Virtual events need a duration of at least 15 minutes.");
+    }
+    virtualDurationMinutes = Math.min(Math.floor(duration), 24 * 60);
+  }
+
+  const location =
+    eventFormat === "virtual" ? "Online" : String(body.location ?? "").trim();
   const routeFrom = (body.route as { from?: string })?.from ?? null;
   const routeTo = (body.route as { to?: string })?.to ?? null;
 
-  assertListingLocation(kind, status, location, routeFrom, routeTo);
+  assertListingLocation(kind, status, location, routeFrom, routeTo, eventFormat);
 
   await pool.query(
     `INSERT INTO listings (
-      id, organizer_id, kind, title, subtitle, category, date_label, event_starts_on, ticket_capacity,
-      time_label, location,
+      id, organizer_id, kind, event_format, title, subtitle, category, date_label, event_starts_on, ticket_capacity,
+      time_label, location, virtual_meeting_url, virtual_duration_minutes,
       price_mwk, image_url, description, operator_name, operator_tagline, operator_detail,
       route_from, route_to, route_duration, status
     ) VALUES (
-      :id, :organizerId, :kind, :title, :subtitle, :category, :dateLabel, :eventStartsOn, :ticketCapacity,
-      :timeLabel, :location,
+      :id, :organizerId, :kind, :eventFormat, :title, :subtitle, :category, :dateLabel, :eventStartsOn, :ticketCapacity,
+      :timeLabel, :location, :virtualMeetingUrl, :virtualDurationMinutes,
       :priceMwk, :imageUrl, :description, :operatorName, :operatorTagline, :operatorDetail,
       :routeFrom, :routeTo, :routeDuration, :status
     )
     ON DUPLICATE KEY UPDATE
+      event_format = VALUES(event_format),
       title = VALUES(title), subtitle = VALUES(subtitle), category = VALUES(category),
       date_label = VALUES(date_label), event_starts_on = VALUES(event_starts_on),
       ticket_capacity = VALUES(ticket_capacity),
       time_label = VALUES(time_label), location = VALUES(location),
+      virtual_meeting_url = VALUES(virtual_meeting_url),
+      virtual_duration_minutes = VALUES(virtual_duration_minutes),
       price_mwk = VALUES(price_mwk), image_url = VALUES(image_url), description = VALUES(description),
       operator_name = VALUES(operator_name), operator_tagline = VALUES(operator_tagline),
       operator_detail = VALUES(operator_detail), route_from = VALUES(route_from),
@@ -382,6 +448,7 @@ export async function upsertListing(organizerId: string, body: Record<string, un
       id,
       organizerId,
       kind,
+      eventFormat,
       title: String(body.title ?? ""),
       subtitle: String(body.subtitle ?? ""),
       category: String(body.category ?? ""),
@@ -390,6 +457,8 @@ export async function upsertListing(organizerId: string, body: Record<string, un
       ticketCapacity: parsedCapacity,
       timeLabel: String(body.time ?? body.timeLabel ?? ""),
       location,
+      virtualMeetingUrl,
+      virtualDurationMinutes,
       priceMwk,
       imageUrl: nextImageUrl,
       description: String(body.description ?? ""),
@@ -417,6 +486,7 @@ export async function upsertListing(organizerId: string, body: Record<string, un
         kind,
         rawTiers,
         priceMwk > 0 ? priceMwk : 1,
+        eventFormat,
       );
       if (tiers.length > 0) {
         const minPrice = Math.min(...tiers.map((t) => t.priceMwk));
@@ -439,7 +509,7 @@ export async function upsertListing(organizerId: string, body: Record<string, un
     await syncListingSoldOutStatus(id, kind, parsedCapacity);
   }
 
-  return getListingById(id, true);
+  return getListingById(id, true, { exposeVirtualUrl: true });
 }
 
 function resolveSeatNumber(
