@@ -74,6 +74,42 @@ export function assertVirtualMeetingUrl(url: string): string {
   return trimmed;
 }
 
+export function isVirtualListingFormat(input: {
+  eventFormat?: string | null;
+  virtualMeetingUrl?: string | null;
+}): boolean {
+  return (
+    input.eventFormat === "virtual" ||
+    Boolean(String(input.virtualMeetingUrl ?? "").trim())
+  );
+}
+
+export function getVirtualEventWindowEnd(
+  eventStartsOn: string | Date | null | undefined,
+  timeLabel: string,
+  virtualDurationMinutes?: number | null,
+): Date | null {
+  const startsAt = parseEventStartsAt(eventStartsOn, timeLabel);
+  if (!startsAt) return null;
+  const duration = Math.max(15, Number(virtualDurationMinutes ?? 120) || 120);
+  return new Date(startsAt.getTime() + duration * 60 * 1000);
+}
+
+export function isVirtualEventWindowEnded(input: {
+  eventStartsOn?: string | Date | null;
+  timeLabel?: string;
+  virtualDurationMinutes?: number | null;
+  now?: Date;
+}): boolean {
+  const end = getVirtualEventWindowEnd(
+    input.eventStartsOn,
+    input.timeLabel ?? "",
+    input.virtualDurationMinutes,
+  );
+  if (!end) return false;
+  return (input.now ?? new Date()) > end;
+}
+
 export type VirtualTransferLockState = {
   locked: boolean;
   message: string;
@@ -218,14 +254,14 @@ export function getVirtualAccessState(input: {
     };
   }
 
-  if (input.ticketStatus === "expired") {
+  if (now > accessClosesAt) {
     return {
       isVirtual: true,
       startsAt: startsAt.toISOString(),
       accessOpensAt: accessOpensAt.toISOString(),
       accessClosesAt: accessClosesAt.toISOString(),
       canAccessLink: false,
-      message: "This ticket has expired.",
+      message: "This virtual event has ended.",
     };
   }
 
@@ -237,17 +273,6 @@ export function getVirtualAccessState(input: {
       accessClosesAt: accessClosesAt.toISOString(),
       canAccessLink: false,
       message: `Join link opens ${ACCESS_LEAD_MINUTES} minutes before the event starts.`,
-    };
-  }
-
-  if (now > accessClosesAt) {
-    return {
-      isVirtual: true,
-      startsAt: startsAt.toISOString(),
-      accessOpensAt: accessOpensAt.toISOString(),
-      accessClosesAt: accessClosesAt.toISOString(),
-      canAccessLink: false,
-      message: "This virtual event has ended.",
     };
   }
 

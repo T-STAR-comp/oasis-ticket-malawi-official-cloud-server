@@ -7,6 +7,7 @@ import {
   assertVirtualTicketTransferAllowed,
   getVirtualAccessState,
 } from "../utils/virtual-events.js";
+import { syncVirtualTicketStatus } from "./ticket-expiry.service.js";
 
 function isMissingTableError(err: unknown): boolean {
   return (
@@ -48,7 +49,7 @@ const EXTENDED_TICKETS_SQL = `
 async function queryUserTicketRows(
   userId: string,
   filters?: { status?: "active" | "used" | "expired"; ticketId?: string },
-) {
+): Promise<RowDataPacket[]> {
   const params: QueryParams = { userId };
   let sql = EXTENDED_TICKETS_SQL;
   sql += ` WHERE ut.user_id = :userId`;
@@ -72,7 +73,12 @@ async function queryUserTicketRows(
     if (filters?.ticketId) fallbackSql += ` AND ut.id = :ticketId`;
     fallbackSql += ` ORDER BY ut.purchased_at DESC`;
     const [rows] = await pool.query<RowDataPacket[]>(fallbackSql, params);
-    return rows.map((row) => ({ ...row, refund_pending: 0, resell_listing_id: null, resell_price_mwk: null }));
+    return rows.map((row) => ({
+      ...row,
+      refund_pending: 0,
+      resell_listing_id: null,
+      resell_price_mwk: null,
+    })) as RowDataPacket[];
   }
 }
 
@@ -95,8 +101,11 @@ function mapUserTicketRow(r: RowDataPacket) {
       : undefined;
 
     const eventFormat = String(r.event_format ?? "physical");
+    const isVirtual =
+      eventFormat === "virtual" ||
+      Boolean(String(r.virtual_meeting_url ?? "").trim());
     const virtualAccess = getVirtualAccessState({
-      eventFormat,
+      eventFormat: isVirtual ? "virtual" : eventFormat,
       eventStartsOn: r.event_starts_on as string | null,
       timeLabel: String(r.time_label ?? ""),
       virtualDurationMinutes: r.virtual_duration_minutes != null ? Number(r.virtual_duration_minutes) : null,
@@ -104,7 +113,7 @@ function mapUserTicketRow(r: RowDataPacket) {
     });
 
     const virtualMeetingUrl =
-      eventFormat === "virtual" &&
+      isVirtual &&
       virtualAccess.canAccessLink &&
       r.virtual_meeting_url
         ? String(r.virtual_meeting_url)
@@ -158,13 +167,37 @@ function mapUserTicketRow(r: RowDataPacket) {
 
 export async function getUserTickets(userId: string, status?: "active" | "used" | "expired") {
   const rows = await queryUserTicketRows(userId, status ? { status } : undefined);
-  return rows.map(mapUserTicketRow);
+  const results = [];
+  for (const r of rows) {
+    const syncedStatus = await syncVirtualTicketStatus({
+      id: String(r.id),
+      status: String(r.status),
+      event_format: r.event_format as string | null,
+      virtual_meeting_url: r.virtual_meeting_url as string | null,
+      event_starts_on: r.event_starts_on as string | null,
+      time_label: r.time_label as string | null,
+      virtual_duration_minutes: r.virtual_duration_minutes as number | null,
+    });
+    results.push(mapUserTicketRow({ ...r, status: syncedStatus }));
+  }
+  return results;
 }
 
 export async function getUserTicketDetail(userId: string, ticketId: string) {
   const rows = await queryUserTicketRows(userId, { ticketId });
-  const purchase = rows[0] ? mapUserTicketRow(rows[0]) : null;
-  if (!purchase) return null;
+  const raw = rows[0];
+  if (!raw) return null;
+
+  const syncedStatus = await syncVirtualTicketStatus({
+    id: String(raw.id),
+    status: String(raw.status),
+    event_format: raw.event_format as string | null,
+    virtual_meeting_url: raw.virtual_meeting_url as string | null,
+    event_starts_on: raw.event_starts_on as string | null,
+    time_label: raw.time_label as string | null,
+    virtual_duration_minutes: raw.virtual_duration_minutes as number | null,
+  });
+  const purchase = mapUserTicketRow({ ...raw, status: syncedStatus });
 
   const listing = await getListingById(purchase.ticketId, true);
   if (!listing) return null;
