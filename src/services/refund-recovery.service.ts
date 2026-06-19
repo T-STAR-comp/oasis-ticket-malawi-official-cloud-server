@@ -227,6 +227,7 @@ export function computeWithdrawableWithDebt(input: {
   reservedInPayouts: number;
   outstandingRefundDebt: number;
   salesRecovered: number;
+  virtualPayoutHold?: number;
 }): number {
   if (input.outstandingRefundDebt > 0) return 0;
   return Math.max(
@@ -234,7 +235,8 @@ export function computeWithdrawableWithDebt(input: {
     input.settledAmount -
       input.paidOut -
       input.reservedInPayouts -
-      input.salesRecovered,
+      input.salesRecovered -
+      (input.virtualPayoutHold ?? 0),
   );
 }
 

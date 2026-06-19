@@ -87,8 +87,12 @@ async function assertWithdrawable(organizerId: string, amount: number) {
     );
   }
   if (amount > balances.withdrawable) {
+    const virtualNote =
+      balances.virtualPayoutHold > 0
+        ? ` MK ${balances.virtualPayoutHold.toLocaleString()} is held from virtual events pending admin verification.`
+        : "";
     throw new Error(
-      `Only ${balances.withdrawable.toLocaleString()} MWK is withdrawable right now. PayChangu settles ticket sales on T+1 — today's sales become available tomorrow.`,
+      `Only ${balances.withdrawable.toLocaleString()} MWK is withdrawable right now. PayChangu settles ticket sales on T+1 — today's sales become available tomorrow.${virtualNote}`,
     );
   }
   return balances;

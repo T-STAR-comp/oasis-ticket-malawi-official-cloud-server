@@ -6,6 +6,10 @@ import {
   syncOrganizerRefundRecovery,
   type RefundDebtSummary,
 } from "./refund-recovery.service.js";
+import {
+  getOrganizerVirtualPayoutHold,
+  UNVERIFIED_VIRTUAL_PAYOUT_WHERE,
+} from "./virtual-payout.service.js";
 
 /**
  * PayChangu T+1 settlement: a payment completed on calendar day D becomes
@@ -22,6 +26,7 @@ export type SettlementBalances = {
   reservedInPayouts: number;
   paidOut: number;
   withdrawable: number;
+  virtualPayoutHold: number;
   refundDebt: number;
   refundRecovered: number;
   outstandingRefundDebt: number;
@@ -33,6 +38,7 @@ function mapBalances(
   row: RowDataPacket | undefined,
   debt: RefundDebtSummary,
   salesRecovered: number,
+  virtualPayoutHold: number,
 ): SettlementBalances {
   const totalEarnings = Number(row?.totalEarnings ?? 0);
   const unsettledAmount = Number(row?.unsettledAmount ?? 0);
@@ -45,6 +51,7 @@ function mapBalances(
     reservedInPayouts,
     outstandingRefundDebt: debt.outstandingRefundDebt,
     salesRecovered,
+    virtualPayoutHold,
   });
 
   return {
@@ -54,6 +61,7 @@ function mapBalances(
     reservedInPayouts,
     paidOut,
     withdrawable,
+    virtualPayoutHold,
     refundDebt: debt.refundDebt,
     refundRecovered: debt.refundRecovered,
     outstandingRefundDebt: debt.outstandingRefundDebt,
@@ -67,6 +75,7 @@ export async function getOrganizerSettlementBalances(
 ): Promise<SettlementBalances> {
   const debt = await syncOrganizerRefundRecovery(organizerId);
   const salesRecovered = await getSalesRecoveredFromSettledSales(organizerId);
+  const virtualPayoutHold = await getOrganizerVirtualPayoutHold(organizerId);
 
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT
@@ -97,7 +106,7 @@ export async function getOrganizerSettlementBalances(
        AND l.status != 'cancelled'`,
     { organizerId },
   );
-  return mapBalances(rows[0], debt, salesRecovered);
+  return mapBalances(rows[0], debt, salesRecovered, virtualPayoutHold);
 }
 
 export async function getPlatformSettlementBalances(): Promise<SettlementBalances> {
@@ -131,7 +140,7 @@ export async function getPlatformSettlementBalances(): Promise<SettlementBalance
     outstandingRefundDebt: 0,
     pendingCustomerRefunds: 0,
   };
-  return mapBalances(rows[0], emptyDebt, 0);
+  return mapBalances(rows[0], emptyDebt, 0, 0);
 }
 
 export type SettlementLine = {
@@ -141,7 +150,7 @@ export type SettlementLine = {
   organizerAmount: number;
   paidAt: string;
   withdrawableAt: string;
-  settlementStatus: "pending_settlement" | "settled" | "cancelled_hold";
+  settlementStatus: "pending_settlement" | "settled" | "cancelled_hold" | "virtual_payout_hold";
 };
 
 export async function getOrganizerSettlementLines(organizerId: string, limit = 100) {
@@ -155,6 +164,8 @@ export async function getOrganizerSettlementLines(organizerId: string, limit = 1
        DATE_ADD(DATE(${PAYMENT_COMPLETED_AT}), INTERVAL 1 DAY) AS withdrawableAt,
        CASE
          WHEN l.status = 'cancelled' THEN 'cancelled_hold'
+         WHEN ${UNVERIFIED_VIRTUAL_PAYOUT_WHERE}
+              AND CURDATE() > DATE(${PAYMENT_COMPLETED_AT}) THEN 'virtual_payout_hold'
          WHEN CURDATE() > DATE(${PAYMENT_COMPLETED_AT}) THEN 'settled'
          ELSE 'pending_settlement'
        END AS settlementStatus
@@ -224,6 +235,7 @@ export async function getAdminSettlementByOrganizer() {
       const refundRecovered = Number(r.refundRecovered ?? 0);
       const outstandingRefundDebt = Math.max(0, refundDebt - refundRecovered);
       const salesRecovered = await getSalesRecoveredFromSettledSales(organizerId);
+      const virtualPayoutHold = await getOrganizerVirtualPayoutHold(organizerId);
       return {
         organizerId,
         companyName: r.companyName as string,
@@ -233,12 +245,14 @@ export async function getAdminSettlementByOrganizer() {
         reservedInPayouts: payouts.reserved,
         paidOut: payouts.paidOut,
         outstandingRefundDebt,
+        virtualPayoutHold,
         withdrawable: computeWithdrawableWithDebt({
           settledAmount: settled,
           paidOut: payouts.paidOut,
           reservedInPayouts: payouts.reserved,
           outstandingRefundDebt,
           salesRecovered,
+          virtualPayoutHold,
         }),
       };
     }),

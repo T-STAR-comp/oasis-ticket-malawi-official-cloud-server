@@ -68,7 +68,10 @@ async function assertWithdrawable(organizerId, amount) {
         throw new Error(`Withdrawals are blocked while you have MK ${balances.outstandingRefundDebt.toLocaleString()} in outstanding customer refund debt. New settled ticket sales will pay customers back first until this balance is cleared.`);
     }
     if (amount > balances.withdrawable) {
-        throw new Error(`Only ${balances.withdrawable.toLocaleString()} MWK is withdrawable right now. PayChangu settles ticket sales on T+1 — today's sales become available tomorrow.`);
+        const virtualNote = balances.virtualPayoutHold > 0
+            ? ` MK ${balances.virtualPayoutHold.toLocaleString()} is held from virtual events pending admin verification.`
+            : "";
+        throw new Error(`Only ${balances.withdrawable.toLocaleString()} MWK is withdrawable right now. PayChangu settles ticket sales on T+1 — today's sales become available tomorrow.${virtualNote}`);
     }
     return balances;
 }

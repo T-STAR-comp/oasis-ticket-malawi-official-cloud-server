@@ -146,7 +146,8 @@ export function computeWithdrawableWithDebt(input) {
     return Math.max(0, input.settledAmount -
         input.paidOut -
         input.reservedInPayouts -
-        input.salesRecovered);
+        input.salesRecovered -
+        (input.virtualPayoutHold ?? 0));
 }
 export async function syncOrganizerRefundRecovery(organizerId) {
     await applyRefundRecovery(organizerId);

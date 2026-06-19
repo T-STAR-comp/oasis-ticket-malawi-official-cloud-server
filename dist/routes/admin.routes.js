@@ -5,6 +5,7 @@ import * as adminStatisticsService from "../services/admin-statistics.service.js
 import * as moderationService from "../services/moderation.service.js";
 import * as financeService from "../services/finance.service.js";
 import * as careersService from "../services/careers.service.js";
+import * as virtualPayoutService from "../services/virtual-payout.service.js";
 import { requireAuth, requireRole, signToken } from "../middleware/auth.js";
 import { fail, ok } from "../utils/http.js";
 export const adminRouter = Router();
@@ -325,6 +326,29 @@ adminRouter.post("/partner-applications/:id/review", async (req, res, next) => {
                 return fail(res, err.message, 404);
             if (err.message === "Application already reviewed")
                 return fail(res, err.message, 409);
+        }
+        next(err);
+    }
+});
+adminRouter.get("/virtual-events", async (_req, res, next) => {
+    try {
+        return ok(res, await virtualPayoutService.listVirtualEventsForAdmin());
+    }
+    catch (err) {
+        next(err);
+    }
+});
+adminRouter.post("/virtual-events/:listingId/verify-payout", async (req, res, next) => {
+    try {
+        const admin = req.user;
+        const result = await virtualPayoutService.verifyVirtualEventPayout(req.params.listingId, admin.id);
+        return ok(res, result);
+    }
+    catch (err) {
+        if (err instanceof Error) {
+            if (err.message === "Virtual event not found")
+                return fail(res, err.message, 404);
+            return fail(res, err.message, 400);
         }
         next(err);
     }
