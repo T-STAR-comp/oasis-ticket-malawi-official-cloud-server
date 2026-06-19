@@ -50,6 +50,9 @@ export function assertListingLocation(kind, status, location, routeFrom, routeTo
         return;
     }
     const loc = location.trim();
+    if (kind === "event" && normalizeForMatch(loc) === "online") {
+        return;
+    }
     if (kind === "event") {
         if (!loc) {
             throw new Error("Venue / location is required before publishing. Include the city, e.g. Amaryllis Hotel, Blantyre.");

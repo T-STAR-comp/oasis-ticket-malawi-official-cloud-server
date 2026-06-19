@@ -240,10 +240,14 @@ export async function initiateCheckout(
     await assertListingEventDateActive(listingId);
     const tiers = (listing as { ticketTiers?: ticketTiersService.TicketTierRow[] }).ticketTiers ?? [];
     if (tiers.length > 0) {
-      if (!input.tierId) {
+      let tierId = input.tierId?.trim() || undefined;
+      if (!tierId && tiers.length === 1) {
+        tierId = tiers[0]?.id;
+      }
+      if (!tierId) {
         throw new Error("Select a ticket type (Standard, VIP, etc.) to continue.");
       }
-      selectedTier = await ticketTiersService.resolveTier(listingId, input.tierId);
+      selectedTier = await ticketTiersService.resolveTier(listingId, tierId);
       if (!selectedTier) throw new Error("Ticket type not found");
       await ticketTiersService.assertTierCheckoutCapacity(selectedTier.id, lineCount);
       unitPrice = selectedTier.priceMwk;

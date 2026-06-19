@@ -325,13 +325,17 @@ export async function upsertListing(organizerId: string, body: Record<string, un
   }
 
   const [existingRows] = await pool.query<RowDataPacket[]>(
-    `SELECT status, ticket_capacity, image_url FROM listings WHERE id = :id AND organizer_id = :organizerId`,
+    `SELECT status, ticket_capacity, image_url, event_format, virtual_meeting_url, virtual_duration_minutes
+     FROM listings WHERE id = :id AND organizer_id = :organizerId`,
     { id, organizerId },
   );
   const existing = existingRows[0] as {
     status?: string;
     ticket_capacity?: number | null;
     image_url?: string;
+    event_format?: string;
+    virtual_meeting_url?: string | null;
+    virtual_duration_minutes?: number | null;
   } | undefined;
 
   const nextImageUrl = String(body.image ?? body.imageUrl ?? "");
@@ -391,9 +395,22 @@ export async function upsertListing(organizerId: string, body: Record<string, un
 
   const rawTiers = body.ticketTiers as TicketTierInput[] | undefined;
   const priceMwk = Number(body.price ?? 0);
-  const rawFormat = String(body.eventFormat ?? body.event_format ?? "physical");
-  const eventFormat: EventFormat =
-    kind === "event" && rawFormat === "virtual" ? "virtual" : "physical";
+  const rawFormat = String(body.eventFormat ?? body.event_format ?? "").trim().toLowerCase();
+  const bodyVirtualUrl = String(
+    body.virtualMeetingUrl ?? body.virtual_meeting_url ?? "",
+  ).trim();
+  const existingVirtualUrl = String(existing?.virtual_meeting_url ?? "").trim();
+
+  let eventFormat: EventFormat = "physical";
+  if (kind === "event") {
+    if (rawFormat === "virtual" || bodyVirtualUrl) {
+      eventFormat = "virtual";
+    } else if (rawFormat === "physical") {
+      eventFormat = "physical";
+    } else if ((existing?.event_format ?? "physical") === "virtual") {
+      eventFormat = "virtual";
+    }
+  }
 
   let virtualMeetingUrl: string | null = null;
   let virtualDurationMinutes: number | null = null;
@@ -402,10 +419,12 @@ export async function upsertListing(organizerId: string, body: Record<string, un
     if (kind !== "event") {
       throw new Error("Only events can be virtual.");
     }
-    virtualMeetingUrl = assertVirtualMeetingUrl(
-      String(body.virtualMeetingUrl ?? body.virtual_meeting_url ?? ""),
-    );
-    const rawDuration = body.virtualDurationMinutes ?? body.virtual_duration_minutes;
+    const meetingUrlSource = bodyVirtualUrl || existingVirtualUrl;
+    virtualMeetingUrl = assertVirtualMeetingUrl(meetingUrlSource);
+    const rawDuration =
+      body.virtualDurationMinutes ??
+      body.virtual_duration_minutes ??
+      existing?.virtual_duration_minutes;
     const duration = Number(rawDuration);
     if (!Number.isFinite(duration) || duration < 15) {
       throw new Error("Virtual events need a duration of at least 15 minutes.");
