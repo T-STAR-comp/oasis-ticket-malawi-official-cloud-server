@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as authService from "../services/auth.service.js";
+import * as firebaseAuthService from "../services/firebase-auth.service.js";
 import { signToken, requireAuth, type AuthedRequest } from "../middleware/auth.js";
 import { fail, ok } from "../utils/http.js";
 
@@ -105,6 +106,33 @@ authRouter.post("/signin/verify", async (req, res, next) => {
 
 authRouter.post("/magic-link", (_req, res) => {
   return fail(res, "Magic link sign-in is not enabled yet", 501);
+});
+
+authRouter.post("/firebase", async (req, res, next) => {
+  try {
+    const body = z
+      .object({
+        idToken: z.string().min(20),
+        fullName: z.string().min(2).optional(),
+        phone: z.string().optional(),
+        acceptedTerms: z.boolean().optional(),
+      })
+      .parse(req.body);
+    const user = await firebaseAuthService.authenticateFirebaseIdToken(body.idToken, {
+      fullName: body.fullName,
+      phone: body.phone,
+      acceptedTerms: body.acceptedTerms,
+    });
+    const token = signToken(user);
+    return ok(res, { user, token });
+  } catch (err) {
+    if (err instanceof Error) {
+      if (err.message.includes("Terms of Service")) return fail(res, err.message, 400);
+      if (err.message.includes("Firebase")) return fail(res, err.message, 503);
+      return fail(res, err.message, 401);
+    }
+    next(err);
+  }
 });
 
 authRouter.get("/me", requireAuth, async (req, res, next) => {

@@ -63,6 +63,28 @@ export const env = {
     referrals: {
         payoutFeePercent: Number(process.env.REFERRAL_PAYOUT_FEE_PERCENT ?? 2),
     },
+    auth: {
+        /** legacy | firebase | both */
+        provider: (process.env.AUTH_PROVIDER ?? "both"),
+    },
+    firebase: {
+        enabled: process.env.FIREBASE_AUTH_ENABLED === "true" ||
+            process.env.AUTH_PROVIDER === "firebase" ||
+            process.env.AUTH_PROVIDER === "both" ||
+            !process.env.AUTH_PROVIDER,
+        projectId: process.env.FIREBASE_PROJECT_ID ?? "ticket-malawi",
+        serviceAccount: (() => {
+            const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+            if (!raw)
+                return null;
+            try {
+                return JSON.parse(raw);
+            }
+            catch {
+                return null;
+            }
+        })(),
+    },
     images: {
         /** Absolute or server-relative path to image-bucket-folder (sibling of app on cPanel). */
         bucketDir: process.env.IMAGE_BUCKET_DIR ??

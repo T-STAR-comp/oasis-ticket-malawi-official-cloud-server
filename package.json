@@ -31,6 +31,7 @@
     "db:migrate:marketplace": "node scripts/run-sql.js database/migration-v16-resell-selfcheckin.sql",
     "db:migrate:virtual": "node scripts/run-sql.js database/migration-v17-virtual-events.sql",
     "db:migrate:virtual-payout": "node scripts/run-sql.js database/migration-v18-virtual-payout-verify.sql",
+    "db:migrate:firebase-auth": "node scripts/run-sql.js database/migration-v19-firebase-auth.sql",
     "photos:optimize": "node scripts/optimize-marketing-photos.mjs"
   },
   "dependencies": {
@@ -38,6 +39,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "firebase-admin": "^14.0.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.1.1",
     "mysql2": "^3.12.0",

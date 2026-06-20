@@ -86,10 +86,13 @@ export async function resendVerification(email) {
     return { sent: true };
 }
 async function validateSignInCredentials(email, password) {
-    const [rows] = await pool.query(`SELECT id, email, password_hash, full_name, role, status, email_verified FROM users WHERE email = :email`, { email: email.toLowerCase() });
+    const [rows] = await pool.query(`SELECT id, email, password_hash, full_name, role, status, email_verified, firebase_uid FROM users WHERE email = :email`, { email: email.toLowerCase() });
     const row = rows[0];
     if (!row)
         return null;
+    if (!row.password_hash) {
+        throw new Error("This account uses Firebase sign-in. Switch to Firebase auth and sign in again.");
+    }
     const valid = await bcrypt.compare(password, row.password_hash);
     if (!valid)
         return null;

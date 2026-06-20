@@ -96,6 +96,8 @@ export function createApp() {
         mockPaymentAmountMwk: env.paychangu.mock ? env.paychangu.mockPaymentAmountMwk : null,
         platformServiceFeePercent: env.platformServiceFeePercent,
         referralPayoutFeePercent: env.referrals.payoutFeePercent,
+        authProvider: env.auth.provider,
+        firebaseAuthEnabled: env.firebase.enabled,
       },
     });
   });
