@@ -103,11 +103,18 @@ export async function assertListingEventDateActive(listingId) {
     }
 }
 async function mapListing(row, seats, opts) {
+    const sessions = await listVirtualSessions(row.id);
     const eventFormat = (row.event_format ?? "physical");
+    const virtualEventType = (row.virtual_event_type ?? "one_time");
+    const virtualBuyMode = (row.virtual_buy_mode ?? "bundle_only");
+    const virtualPricingMode = (row.virtual_pricing_mode ?? "uniform");
     const listing = {
         id: row.id,
         kind: row.kind,
         eventFormat,
+        virtualEventType,
+        virtualBuyMode,
+        virtualPricingMode,
         title: row.title,
         subtitle: row.subtitle,
         category: row.category,
@@ -116,6 +123,18 @@ async function mapListing(row, seats, opts) {
         time: row.time_label,
         location: row.location,
         virtualDurationMinutes: row.virtual_duration_minutes != null ? Number(row.virtual_duration_minutes) : undefined,
+        virtualSessions: eventFormat === "virtual" && sessions.length > 0
+            ? sessions.map((s) => ({
+                id: s.id,
+                index: s.session_index,
+                title: s.title,
+                startsAt: new Date(s.starts_at).toISOString(),
+                endsAt: new Date(s.ends_at).toISOString(),
+                meetingUrl: s.meeting_url ?? undefined,
+                priceMwk: Number(s.price_mwk ?? 0),
+                status: s.status,
+            }))
+            : undefined,
         ...(opts?.exposeVirtualUrl && row.virtual_meeting_url
             ? { virtualMeetingUrl: row.virtual_meeting_url }
             : {}),
@@ -157,6 +176,37 @@ async function mapListing(row, seats, opts) {
     const withCapacity = await enrichListingCapacity(row, listing);
     const withTiers = await attachTicketTiers(row, withCapacity);
     return enrichOrganizerModeration(row.organizer_id, withTiers);
+}
+async function listVirtualSessions(listingId) {
+    try {
+        const [rows] = await pool.query(`SELECT id, listing_id, session_index, title, starts_at, ends_at, meeting_url, price_mwk, status
+       FROM virtual_event_sessions
+       WHERE listing_id = :listingId
+       ORDER BY session_index ASC`, { listingId });
+        return rows;
+    }
+    catch (err) {
+        if (err instanceof Error && err.message.includes("doesn't exist"))
+            return [];
+        throw err;
+    }
+}
+function normalizeVirtualSessions(input) {
+    if (!Array.isArray(input))
+        return [];
+    return input
+        .map((raw) => {
+        const row = raw;
+        return {
+            title: String(row.title ?? "").trim(),
+            startsAt: String(row.startsAt ?? row.starts_at ?? ""),
+            endsAt: String(row.endsAt ?? row.ends_at ?? ""),
+            meetingUrl: String(row.meetingUrl ?? row.meeting_url ?? "").trim() || undefined,
+            priceMwk: Number(row.priceMwk ?? row.price_mwk ?? 0),
+            status: String(row.status || "scheduled") ?? "scheduled",
+        };
+    })
+        .filter((s) => s.title && s.startsAt && s.endsAt);
 }
 export async function listPublished(kind) {
     let sql = `SELECT * FROM listings WHERE ${PUBLIC_VISIBILITY_SQL}`;
@@ -292,6 +342,9 @@ export async function upsertListing(organizerId, body) {
     const rawTiers = body.ticketTiers;
     const priceMwk = Number(body.price ?? 0);
     const rawFormat = String(body.eventFormat ?? body.event_format ?? "").trim().toLowerCase();
+    const rawVirtualEventType = String(body.virtualEventType ?? body.virtual_event_type ?? "one_time").trim().toLowerCase();
+    const rawVirtualBuyMode = String(body.virtualBuyMode ?? body.virtual_buy_mode ?? "bundle_only").trim().toLowerCase();
+    const rawVirtualPricingMode = String(body.virtualPricingMode ?? body.virtual_pricing_mode ?? "uniform").trim().toLowerCase();
     const bodyVirtualUrl = String(body.virtualMeetingUrl ?? body.virtual_meeting_url ?? "").trim();
     const existingVirtualUrl = String(existing?.virtual_meeting_url ?? "").trim();
     let eventFormat = "physical";
@@ -308,12 +361,26 @@ export async function upsertListing(organizerId, body) {
     }
     let virtualMeetingUrl = null;
     let virtualDurationMinutes = null;
+    let virtualEventType = "one_time";
+    let virtualBuyMode = "bundle_only";
+    let virtualPricingMode = "uniform";
+    let virtualSessions = [];
     if (eventFormat === "virtual") {
         if (kind !== "event") {
             throw new Error("Only events can be virtual.");
         }
+        virtualEventType = rawVirtualEventType === "ongoing" ? "ongoing" : "one_time";
+        virtualBuyMode =
+            rawVirtualBuyMode === "allow_session_selection"
+                ? "allow_session_selection"
+                : "bundle_only";
+        virtualPricingMode = rawVirtualPricingMode === "per_session" ? "per_session" : "uniform";
+        virtualSessions = normalizeVirtualSessions(body.virtualSessions ?? body.virtual_sessions);
         const meetingUrlSource = bodyVirtualUrl || existingVirtualUrl;
-        virtualMeetingUrl = assertVirtualMeetingUrl(meetingUrlSource);
+        virtualMeetingUrl =
+            virtualEventType === "ongoing"
+                ? (meetingUrlSource ? assertVirtualMeetingUrl(meetingUrlSource) : null)
+                : assertVirtualMeetingUrl(meetingUrlSource);
         const rawDuration = body.virtualDurationMinutes ??
             body.virtual_duration_minutes ??
             existing?.virtual_duration_minutes;
@@ -322,24 +389,42 @@ export async function upsertListing(organizerId, body) {
             throw new Error("Virtual events need a duration of at least 15 minutes.");
         }
         virtualDurationMinutes = Math.min(Math.floor(duration), 24 * 60);
+        if (virtualEventType === "ongoing") {
+            if (virtualSessions.length === 0) {
+                throw new Error("Ongoing virtual events require at least one session.");
+            }
+            const first = virtualSessions[0];
+            if (!first.meetingUrl) {
+                throw new Error("The first session must include a meeting link.");
+            }
+            first.meetingUrl = assertVirtualMeetingUrl(first.meetingUrl);
+            for (let i = 1; i < virtualSessions.length; i++) {
+                if (virtualSessions[i].meetingUrl) {
+                    virtualSessions[i].meetingUrl = assertVirtualMeetingUrl(virtualSessions[i].meetingUrl);
+                }
+            }
+        }
     }
     const location = eventFormat === "virtual" ? "Online" : String(body.location ?? "").trim();
     const routeFrom = body.route?.from ?? null;
     const routeTo = body.route?.to ?? null;
     assertListingLocation(kind, status, location, routeFrom, routeTo, eventFormat);
     await pool.query(`INSERT INTO listings (
-      id, organizer_id, kind, event_format, title, subtitle, category, date_label, event_starts_on, ticket_capacity,
+      id, organizer_id, kind, event_format, virtual_event_type, virtual_buy_mode, virtual_pricing_mode, title, subtitle, category, date_label, event_starts_on, ticket_capacity,
       time_label, location, virtual_meeting_url, virtual_duration_minutes,
       price_mwk, image_url, description, operator_name, operator_tagline, operator_detail,
       route_from, route_to, route_duration, status
     ) VALUES (
-      :id, :organizerId, :kind, :eventFormat, :title, :subtitle, :category, :dateLabel, :eventStartsOn, :ticketCapacity,
+      :id, :organizerId, :kind, :eventFormat, :virtualEventType, :virtualBuyMode, :virtualPricingMode, :title, :subtitle, :category, :dateLabel, :eventStartsOn, :ticketCapacity,
       :timeLabel, :location, :virtualMeetingUrl, :virtualDurationMinutes,
       :priceMwk, :imageUrl, :description, :operatorName, :operatorTagline, :operatorDetail,
       :routeFrom, :routeTo, :routeDuration, :status
     )
     ON DUPLICATE KEY UPDATE
       event_format = VALUES(event_format),
+      virtual_event_type = VALUES(virtual_event_type),
+      virtual_buy_mode = VALUES(virtual_buy_mode),
+      virtual_pricing_mode = VALUES(virtual_pricing_mode),
       title = VALUES(title), subtitle = VALUES(subtitle), category = VALUES(category),
       date_label = VALUES(date_label), event_starts_on = VALUES(event_starts_on),
       ticket_capacity = VALUES(ticket_capacity),
@@ -354,6 +439,9 @@ export async function upsertListing(organizerId, body) {
         organizerId,
         kind,
         eventFormat,
+        virtualEventType,
+        virtualBuyMode,
+        virtualPricingMode,
         title: String(body.title ?? ""),
         subtitle: String(body.subtitle ?? ""),
         category: String(body.category ?? ""),
@@ -397,6 +485,38 @@ export async function upsertListing(organizerId, body) {
         catch (err) {
             if (err instanceof Error && err.message.includes("doesn't exist")) {
                 throw new Error("Ticket types are not enabled on the database yet. Run: npm run db:migrate:tiers");
+            }
+            throw err;
+        }
+    }
+    if (eventFormat === "virtual") {
+        try {
+            await pool.query(`DELETE FROM virtual_event_sessions WHERE listing_id = :listingId`, {
+                listingId: id,
+            });
+            if (virtualEventType === "ongoing" && virtualSessions.length > 0) {
+                for (let i = 0; i < virtualSessions.length; i++) {
+                    const s = virtualSessions[i];
+                    await pool.query(`INSERT INTO virtual_event_sessions
+              (id, listing_id, session_index, title, starts_at, ends_at, meeting_url, price_mwk, status)
+             VALUES
+              (:id, :listingId, :idx, :title, :startsAt, :endsAt, :meetingUrl, :priceMwk, :status)`, {
+                        id: uuidv4(),
+                        listingId: id,
+                        idx: i + 1,
+                        title: s.title,
+                        startsAt: s.startsAt,
+                        endsAt: s.endsAt,
+                        meetingUrl: s.meetingUrl ?? null,
+                        priceMwk: Number.isFinite(s.priceMwk) ? Math.max(0, Math.floor(s.priceMwk)) : 0,
+                        status: s.status ?? "scheduled",
+                    });
+                }
+            }
+        }
+        catch (err) {
+            if (err instanceof Error && err.message.includes("doesn't exist")) {
+                throw new Error("Virtual sessions are not enabled on the database yet. Run: npm run db:migrate:virtual-sessions");
             }
             throw err;
         }

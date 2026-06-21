@@ -6,8 +6,14 @@ import { getListingById } from "./listings.service.js";
 import {
   assertVirtualTicketTransferAllowed,
   getVirtualAccessState,
+  getVirtualSessionAccessState,
 } from "../utils/virtual-events.js";
 import { syncVirtualTicketStatus } from "./ticket-expiry.service.js";
+import {
+  listEnrolledVirtualSessions,
+  listListingVirtualSessions,
+  type VirtualSessionRow,
+} from "./virtual-session-checkout.service.js";
 
 function isMissingTableError(err: unknown): boolean {
   return (
@@ -20,6 +26,7 @@ const BASE_TICKETS_SQL = `
     SELECT ut.*, l.title, l.category, l.date_label, l.time_label, l.kind, l.image_url,
            l.operator_name, l.location, l.organizer_id, l.status AS listing_status,
            l.event_starts_on, l.event_format, l.virtual_meeting_url, l.virtual_duration_minutes,
+           l.virtual_event_type, l.virtual_buy_mode, l.virtual_pricing_mode,
            ut.ticket_tier_name,
            op.status AS organizer_status, op.flagged_at, op.flag_reason,
            op.suspension_reason
@@ -31,6 +38,7 @@ const EXTENDED_TICKETS_SQL = `
     SELECT ut.*, l.title, l.category, l.date_label, l.time_label, l.kind, l.image_url,
            l.operator_name, l.location, l.organizer_id, l.status AS listing_status,
            l.event_starts_on, l.event_format, l.virtual_meeting_url, l.virtual_duration_minutes,
+           l.virtual_event_type, l.virtual_buy_mode, l.virtual_pricing_mode,
            ut.ticket_tier_name,
            op.status AS organizer_status, op.flagged_at, op.flag_reason,
            op.suspension_reason,
@@ -82,7 +90,51 @@ async function queryUserTicketRows(
   }
 }
 
-function mapUserTicketRow(r: RowDataPacket) {
+function mapVirtualSessionAccess(session: VirtualSessionRow, ticketStatus: string) {
+  const access = getVirtualSessionAccessState({
+    startsAt: session.starts_at,
+    endsAt: session.ends_at,
+    meetingUrl: session.meeting_url,
+    ticketStatus,
+    sessionStatus: session.status,
+  });
+  return {
+    id: session.id,
+    title: session.title,
+    startsAt: access.startsAt,
+    endsAt: access.accessClosesAt,
+    meetingUrl:
+      access.canAccessLink && session.meeting_url ? String(session.meeting_url) : undefined,
+    canAccessLink: access.canAccessLink,
+    sessionEnded: access.sessionEnded,
+    message: access.message,
+    status: session.status,
+    priceMwk: Number(session.price_mwk ?? 0),
+  };
+}
+
+async function resolvePurchasedVirtualSessions(
+  row: RowDataPacket,
+  ticketStatus: string,
+) {
+  const eventFormat = String(row.event_format ?? "physical");
+  const virtualEventType = String(row.virtual_event_type ?? "one_time");
+  if (eventFormat !== "virtual" || virtualEventType !== "ongoing") return undefined;
+
+  let enrolled = await listEnrolledVirtualSessions(String(row.id));
+  const buyMode = String(row.virtual_buy_mode ?? "bundle_only");
+  if (enrolled.length === 0 && buyMode === "bundle_only") {
+    enrolled = await listListingVirtualSessions(String(row.listing_id));
+  }
+
+  if (enrolled.length === 0) return [];
+
+  return enrolled
+    .filter((session) => session.status !== "cancelled")
+    .map((session) => mapVirtualSessionAccess(session, ticketStatus));
+}
+
+function mapUserTicketRow(r: RowDataPacket, enrolledVirtualSessions?: Awaited<ReturnType<typeof resolvePurchasedVirtualSessions>>) {
     const organizerRestricted = ["suspended", "banned", "inactive"].includes(
       String(r.organizer_status),
     );
@@ -115,7 +167,8 @@ function mapUserTicketRow(r: RowDataPacket) {
     const virtualMeetingUrl =
       isVirtual &&
       virtualAccess.canAccessLink &&
-      r.virtual_meeting_url
+      r.virtual_meeting_url &&
+      (!enrolledVirtualSessions || enrolledVirtualSessions.length === 0)
         ? String(r.virtual_meeting_url)
         : undefined;
 
@@ -162,6 +215,7 @@ function mapUserTicketRow(r: RowDataPacket) {
     },
     virtualMeetingUrl,
     virtualAccess,
+    enrolledVirtualSessions,
   };
 }
 
@@ -171,14 +225,22 @@ export async function getUserTickets(userId: string, status?: "active" | "used" 
   for (const r of rows) {
     const syncedStatus = await syncVirtualTicketStatus({
       id: String(r.id),
+      listing_id: String(r.listing_id),
       status: String(r.status),
       event_format: r.event_format as string | null,
+      virtual_event_type: r.virtual_event_type as string | null,
+      virtual_buy_mode: r.virtual_buy_mode as string | null,
       virtual_meeting_url: r.virtual_meeting_url as string | null,
       event_starts_on: r.event_starts_on as string | null,
       time_label: r.time_label as string | null,
       virtual_duration_minutes: r.virtual_duration_minutes as number | null,
     });
-    results.push(mapUserTicketRow({ ...r, status: syncedStatus }));
+    results.push(
+      mapUserTicketRow(
+        { ...r, status: syncedStatus },
+        await resolvePurchasedVirtualSessions({ ...r, status: syncedStatus }, syncedStatus),
+      ),
+    );
   }
   return results;
 }
@@ -190,14 +252,20 @@ export async function getUserTicketDetail(userId: string, ticketId: string) {
 
   const syncedStatus = await syncVirtualTicketStatus({
     id: String(raw.id),
+    listing_id: String(raw.listing_id),
     status: String(raw.status),
     event_format: raw.event_format as string | null,
+    virtual_event_type: raw.virtual_event_type as string | null,
+    virtual_buy_mode: raw.virtual_buy_mode as string | null,
     virtual_meeting_url: raw.virtual_meeting_url as string | null,
     event_starts_on: raw.event_starts_on as string | null,
     time_label: raw.time_label as string | null,
     virtual_duration_minutes: raw.virtual_duration_minutes as number | null,
   });
-  const purchase = mapUserTicketRow({ ...raw, status: syncedStatus });
+  const purchase = mapUserTicketRow(
+    { ...raw, status: syncedStatus },
+    await resolvePurchasedVirtualSessions({ ...raw, status: syncedStatus }, syncedStatus),
+  );
 
   const listing = await getListingById(purchase.ticketId, true);
   if (!listing) return null;

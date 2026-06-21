@@ -11,7 +11,11 @@ const PAYMENT_COMPLETED_AT = `COALESCE(pl.completed_at, o.updated_at, o.created_
 /** SQL fragment: listing is virtual and payout not yet admin-verified. */
 export const UNVERIFIED_VIRTUAL_PAYOUT_WHERE = `
   (l.event_format = 'virtual' OR NULLIF(TRIM(l.virtual_meeting_url), '') IS NOT NULL)
-  AND l.virtual_payout_verified_at IS NULL
+  AND (
+    (COALESCE(l.virtual_event_type, 'one_time') = 'ongoing' AND l.virtual_first_session_verified_at IS NULL)
+    OR
+    (COALESCE(l.virtual_event_type, 'one_time') != 'ongoing' AND l.virtual_payout_verified_at IS NULL)
+  )
 `;
 
 export async function getOrganizerVirtualPayoutHold(organizerId: string): Promise<number> {
@@ -66,7 +70,9 @@ export async function listVirtualEventsForAdmin(): Promise<AdminVirtualEventRow[
        l.event_starts_on AS eventStartsOn,
        l.time_label AS timeLabel,
        l.virtual_duration_minutes AS virtualDurationMinutes,
+       l.virtual_event_type AS virtualEventType,
        l.virtual_payout_verified_at AS payoutVerifiedAt,
+       l.virtual_first_session_verified_at AS firstSessionVerifiedAt,
        COALESCE(SUM(CASE WHEN o.status = 'confirmed' THEN o.subtotal_mwk ELSE 0 END), 0) AS totalEarnings,
        COALESCE(SUM(
          CASE
@@ -85,7 +91,7 @@ export async function listVirtualEventsForAdmin(): Promise<AdminVirtualEventRow[
        l.id, l.title, l.status, l.organizer_id,
        op.company_name, op.contact_name, op.email,
        l.virtual_meeting_url, l.event_starts_on, l.time_label,
-       l.virtual_duration_minutes, l.virtual_payout_verified_at
+      l.virtual_duration_minutes, l.virtual_event_type, l.virtual_payout_verified_at, l.virtual_first_session_verified_at
      ORDER BY l.event_starts_on DESC, l.created_at DESC`,
   );
 
@@ -95,7 +101,10 @@ export async function listVirtualEventsForAdmin(): Promise<AdminVirtualEventRow[
     const timeLabel = String(r.timeLabel ?? "");
     const virtualDurationMinutes =
       r.virtualDurationMinutes != null ? Number(r.virtualDurationMinutes) : null;
-    const payoutVerified = r.payoutVerifiedAt != null;
+    const isOngoing = String(r.virtualEventType ?? "one_time") === "ongoing";
+    const payoutVerified = isOngoing
+      ? r.firstSessionVerifiedAt != null
+      : r.payoutVerifiedAt != null;
     const eventEnded = isVirtualEventWindowEnded({
       eventStartsOn,
       timeLabel,
@@ -120,7 +129,9 @@ export async function listVirtualEventsForAdmin(): Promise<AdminVirtualEventRow[
       totalEarnings: Number(r.totalEarnings ?? 0),
       settledEarnings: Number(r.settledEarnings ?? 0),
       payoutVerified,
-      payoutVerifiedAt: r.payoutVerifiedAt ? String(r.payoutVerifiedAt) : null,
+      payoutVerifiedAt: isOngoing
+        ? (r.firstSessionVerifiedAt ? String(r.firstSessionVerifiedAt) : null)
+        : (r.payoutVerifiedAt ? String(r.payoutVerifiedAt) : null),
       eventEnded,
       eventEndsAt: end ? end.toISOString() : null,
       canVerify: eventEnded && !payoutVerified,
@@ -130,8 +141,8 @@ export async function listVirtualEventsForAdmin(): Promise<AdminVirtualEventRow[
 
 export async function verifyVirtualEventPayout(listingId: string, adminUserId: string) {
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT id, title, event_format, virtual_meeting_url, event_starts_on, time_label,
-            virtual_duration_minutes, virtual_payout_verified_at
+    `SELECT id, title, event_format, virtual_event_type, virtual_meeting_url, event_starts_on, time_label,
+            virtual_duration_minutes, virtual_payout_verified_at, virtual_first_session_verified_at
      FROM listings WHERE id = :id`,
     { id: listingId },
   );
@@ -147,8 +158,12 @@ export async function verifyVirtualEventPayout(listingId: string, adminUserId: s
     throw new Error("This listing is not a virtual event");
   }
 
-  if (row.virtual_payout_verified_at) {
+  const isOngoing = String(row.virtual_event_type ?? "one_time") === "ongoing";
+  if (!isOngoing && row.virtual_payout_verified_at) {
     throw new Error("Payout for this virtual event has already been verified");
+  }
+  if (isOngoing && row.virtual_first_session_verified_at) {
+    throw new Error("First session for this virtual event has already been verified");
   }
 
   const eventEnded = isVirtualEventWindowEnded({
@@ -163,12 +178,21 @@ export async function verifyVirtualEventPayout(listingId: string, adminUserId: s
     );
   }
 
-  await pool.query(
-    `UPDATE listings
-     SET virtual_payout_verified_at = NOW(), virtual_payout_verified_by = :adminUserId
-     WHERE id = :id AND virtual_payout_verified_at IS NULL`,
-    { id: listingId, adminUserId } satisfies QueryParams,
-  );
+  if (isOngoing) {
+    await pool.query(
+      `UPDATE listings
+       SET virtual_first_session_verified_at = NOW(), virtual_first_session_verified_by = :adminUserId
+       WHERE id = :id AND virtual_first_session_verified_at IS NULL`,
+      { id: listingId, adminUserId } satisfies QueryParams,
+    );
+  } else {
+    await pool.query(
+      `UPDATE listings
+       SET virtual_payout_verified_at = NOW(), virtual_payout_verified_by = :adminUserId
+       WHERE id = :id AND virtual_payout_verified_at IS NULL`,
+      { id: listingId, adminUserId } satisfies QueryParams,
+    );
+  }
 
   return { listingId, verified: true };
 }

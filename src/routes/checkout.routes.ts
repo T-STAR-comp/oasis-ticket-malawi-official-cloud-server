@@ -31,6 +31,10 @@ const checkoutSchema = z.object({
     emptyToUndefined,
     z.string().trim().min(2).max(64).optional(),
   ),
+  virtualSessionIds: z
+    .array(z.string().uuid())
+    .optional()
+    .transform((ids) => (ids && ids.length > 0 ? ids : undefined)),
 });
 
 const accessQuerySchema = z.object({

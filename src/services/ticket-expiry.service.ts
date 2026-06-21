@@ -7,6 +7,9 @@ import {
   isVirtualEventWindowEnded,
   isVirtualListingFormat,
 } from "../utils/virtual-events.js";
+import {
+  getPurchasedVirtualSeriesEndAt,
+} from "./virtual-session-checkout.service.js";
 
 const TICKET_EXPIRY_INTERVAL_MS = 60 * 60 * 1000;
 const VIRTUAL_STATUS_INTERVAL_MS = 5 * 60 * 1000;
@@ -28,8 +31,11 @@ export async function expireTicketsPastEventDate() {
 
 type VirtualTicketRow = {
   id: string;
+  listing_id?: string;
   status: string;
   event_format?: string | null;
+  virtual_event_type?: string | null;
+  virtual_buy_mode?: string | null;
   virtual_meeting_url?: string | null;
   event_starts_on?: string | Date | null;
   time_label?: string | null;
@@ -47,12 +53,33 @@ export async function syncVirtualTicketStatus(row: VirtualTicketRow): Promise<st
     return row.status;
   }
 
-  const windowEnded = isVirtualEventWindowEnded({
-    eventStartsOn: row.event_starts_on,
-    timeLabel: String(row.time_label ?? ""),
-    virtualDurationMinutes:
-      row.virtual_duration_minutes != null ? Number(row.virtual_duration_minutes) : null,
-  });
+  const isOngoing = String(row.virtual_event_type ?? "one_time") === "ongoing";
+  let windowEnded: boolean;
+
+  if (isOngoing && row.listing_id) {
+    const seriesEnd = await getPurchasedVirtualSeriesEndAt(
+      String(row.id),
+      String(row.listing_id),
+      String(row.virtual_buy_mode ?? "bundle_only"),
+    );
+    if (seriesEnd) {
+      windowEnded = new Date() > seriesEnd;
+    } else {
+      windowEnded = isVirtualEventWindowEnded({
+        eventStartsOn: row.event_starts_on,
+        timeLabel: String(row.time_label ?? ""),
+        virtualDurationMinutes:
+          row.virtual_duration_minutes != null ? Number(row.virtual_duration_minutes) : null,
+      });
+    }
+  } else {
+    windowEnded = isVirtualEventWindowEnded({
+      eventStartsOn: row.event_starts_on,
+      timeLabel: String(row.time_label ?? ""),
+      virtualDurationMinutes:
+        row.virtual_duration_minutes != null ? Number(row.virtual_duration_minutes) : null,
+    });
+  }
 
   if (windowEnded && row.status === "active") {
     await pool.query(
@@ -78,8 +105,8 @@ export async function syncVirtualTicketStatus(row: VirtualTicketRow): Promise<st
 /** Mark virtual tickets as used once the scheduled window ends. */
 export async function markVirtualTicketsUsedAfterWindow() {
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT ut.id, ut.status, l.event_starts_on, l.time_label, l.virtual_duration_minutes,
-            l.event_format, l.virtual_meeting_url
+    `SELECT ut.id, ut.status, ut.listing_id, l.event_starts_on, l.time_label, l.virtual_duration_minutes,
+            l.event_format, l.virtual_meeting_url, l.virtual_event_type, l.virtual_buy_mode
      FROM user_tickets ut
      JOIN listings l ON l.id = ut.listing_id
      WHERE ut.status IN ('active', 'expired')
@@ -95,8 +122,11 @@ export async function markVirtualTicketsUsedAfterWindow() {
     const before = String(row.status);
     const after = await syncVirtualTicketStatus({
       id: String(row.id),
+      listing_id: String(row.listing_id),
       status: before,
       event_format: row.event_format as string | null,
+      virtual_event_type: row.virtual_event_type as string | null,
+      virtual_buy_mode: row.virtual_buy_mode as string | null,
       virtual_meeting_url: row.virtual_meeting_url as string | null,
       event_starts_on: row.event_starts_on as string,
       time_label: row.time_label as string | null,

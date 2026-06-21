@@ -22,6 +22,10 @@ const checkoutSchema = z.object({
     savePaymentMethod: z.boolean().optional(),
     queueId: optionalUuid(),
     referralCode: z.preprocess(emptyToUndefined, z.string().trim().min(2).max(64).optional()),
+    virtualSessionIds: z
+        .array(z.string().uuid())
+        .optional()
+        .transform((ids) => (ids && ids.length > 0 ? ids : undefined)),
 });
 const accessQuerySchema = z.object({
     qty: z.coerce.number().int().min(1).max(20).default(1),

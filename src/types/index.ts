@@ -1,6 +1,9 @@
 export type UserRole = "customer" | "organizer" | "admin";
 export type ListingKind = "event" | "travel";
 export type EventFormat = "physical" | "virtual";
+export type VirtualEventType = "one_time" | "ongoing";
+export type VirtualBuyMode = "bundle_only" | "allow_session_selection";
+export type VirtualPricingMode = "uniform" | "per_session";
 export type ListingStatus = "published" | "draft" | "postponed" | "cancelled" | "sold_out";
 export type SeatStatus = "available" | "taken" | "unavailable";
 export type UserTicketStatus = "active" | "used" | "expired";
@@ -19,6 +22,9 @@ export interface ListingRow {
   organizer_id: string;
   kind: ListingKind;
   event_format?: EventFormat;
+  virtual_event_type?: VirtualEventType;
+  virtual_buy_mode?: VirtualBuyMode;
+  virtual_pricing_mode?: VirtualPricingMode;
   title: string;
   subtitle: string;
   category: string;
@@ -39,6 +45,18 @@ export interface ListingRow {
   route_to: string | null;
   route_duration: string | null;
   status: ListingStatus;
+}
+
+export interface VirtualEventSessionRow {
+  id: string;
+  listing_id: string;
+  session_index: number;
+  title: string;
+  starts_at: string | Date;
+  ends_at: string | Date;
+  meeting_url: string | null;
+  price_mwk: number;
+  status: "scheduled" | "rescheduled" | "cancelled";
 }
 
 export interface SeatRow {

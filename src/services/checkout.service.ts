@@ -41,6 +41,10 @@ import { fulfillResellSale } from "./resell.service.js";
 import {
   computePlatformServiceFee,
 } from "../utils/platform-fee.js";
+import {
+  enrollUserTicketVirtualSessions,
+  resolveVirtualCheckoutPricing,
+} from "./virtual-session-checkout.service.js";
 
 function platformServiceFeeForSubtotal(subtotalMwk: number): number {
   return computePlatformServiceFee(subtotalMwk);
@@ -56,6 +60,7 @@ export type CheckoutInput = {
   savePaymentMethod?: boolean;
   queueId?: string;
   referralCode?: string;
+  virtualSessionIds?: string[];
   /** Populated server-side from the signed-in user's profile — not sent by the client. */
   contactName?: string;
   contactEmail?: string;
@@ -229,15 +234,42 @@ export async function initiateCheckout(
     throw new Error("This listing is not available for purchase.");
   }
 
-  const lineCount =
+  const lineCountBase =
     listing.kind === "travel" && input.seatNumbers?.length
       ? input.seatNumbers.length
       : input.qty;
 
+  let lineCount = lineCountBase;
   let unitPrice = Number(listing.price);
   let selectedTier: ticketTiersService.TicketTierRow | null = null;
+  let virtualSessionIds: string[] = [];
+  let enrollAllVirtualSessions = false;
+
   if (listing.kind === "event") {
     await assertListingEventDateActive(listingId);
+    const virtualPlan = await resolveVirtualCheckoutPricing(
+      {
+        id: listingId,
+        kind: listing.kind,
+        eventFormat: String(listing.eventFormat ?? "physical"),
+        virtualEventType: String(listing.virtualEventType ?? "one_time"),
+        virtualBuyMode: listing.virtualBuyMode,
+        virtualPricingMode: listing.virtualPricingMode,
+        price: Number(listing.price),
+        ticketTiers: (listing as { ticketTiers?: ticketTiersService.TicketTierRow[] }).ticketTiers,
+      },
+      {
+        qty: input.qty,
+        tierId: input.tierId,
+        virtualSessionIds: input.virtualSessionIds,
+      },
+    );
+
+    lineCount = virtualPlan.lineCount;
+    unitPrice = virtualPlan.unitPrice;
+    virtualSessionIds = virtualPlan.selectedSessionIds;
+    enrollAllVirtualSessions = virtualPlan.enrollAllSessions;
+
     const tiers = (listing as { ticketTiers?: ticketTiersService.TicketTierRow[] }).ticketTiers ?? [];
     if (tiers.length > 0) {
       let tierId = input.tierId?.trim() || undefined;
@@ -250,7 +282,9 @@ export async function initiateCheckout(
       selectedTier = await ticketTiersService.resolveTier(listingId, tierId);
       if (!selectedTier) throw new Error("Ticket type not found");
       await ticketTiersService.assertTierCheckoutCapacity(selectedTier.id, lineCount);
-      unitPrice = selectedTier.priceMwk;
+      if (!virtualPlan.virtualSessionSelection) {
+        unitPrice = selectedTier.priceMwk;
+      }
     }
   }
 
@@ -291,6 +325,9 @@ export async function initiateCheckout(
       conn,
       unitPrice,
       selectedTier,
+      lineCount,
+      virtualSessionIds,
+      enrollAllVirtualSessions,
     );
   } finally {
     await conn.query(`SELECT RELEASE_LOCK(:lockKey)`, { lockKey });
@@ -306,12 +343,10 @@ async function createCheckoutWithPayChangu(
   conn: Awaited<ReturnType<typeof pool.getConnection>>,
   unitPrice: number,
   selectedTier: ticketTiersService.TicketTierRow | null,
+  lineCount: number,
+  virtualSessionIds: string[],
+  enrollAllVirtualSessions: boolean,
 ) {
-  const lineCount =
-    listing.kind === "travel" && input.seatNumbers?.length
-      ? input.seatNumbers.length
-      : input.qty;
-
   const pricing = await pricingForCheckout(
     lineCount,
     unitPrice,
@@ -348,6 +383,8 @@ async function createCheckoutWithPayChangu(
     tierId: selectedTier?.id ?? null,
     tierName: selectedTier?.name ?? null,
     unitPrice,
+    virtualSessionIds,
+    enrollAllVirtualSessions,
   };
 
   if (listing.kind === "travel" && input.seatNumbers?.length) {
@@ -671,6 +708,8 @@ async function fulfillCheckout(ledger: LedgerRow) {
     const unitPrice = Number(meta.unitPrice ?? listing.price);
     const tierId = (meta.tierId as string | null) ?? null;
     const tierName = (meta.tierName as string | null) ?? null;
+    const virtualSessionIds = ((meta.virtualSessionIds as string[] | undefined) ?? []).filter(Boolean);
+    const enrollAllVirtualSessions = Boolean(meta.enrollAllVirtualSessions);
     const catalogSubtotal = Number(meta.subtotal ?? unitPrice * lineCount);
     const catalogServiceFee = Number(
       meta.serviceFee ?? platformServiceFeeForSubtotal(catalogSubtotal),
@@ -762,6 +801,14 @@ async function fulfillCheckout(ledger: LedgerRow) {
           },
         );
         ticketIds.push(ticketId);
+
+        const isOngoingVirtual =
+          listing.kind === "event" &&
+          listing.eventFormat === "virtual" &&
+          (listing.virtualEventType ?? "one_time") === "ongoing";
+        if (isOngoingVirtual && virtualSessionIds.length > 0) {
+          await enrollUserTicketVirtualSessions(conn, ticketId, virtualSessionIds);
+        }
       }
     }
 

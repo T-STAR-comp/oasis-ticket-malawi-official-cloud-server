@@ -199,3 +199,70 @@ export function getVirtualAccessState(input) {
         message: "Your join link is ready.",
     };
 }
+export function getVirtualSessionAccessState(input) {
+    const now = input.now ?? new Date();
+    if (input.sessionStatus === "cancelled") {
+        return {
+            canAccessLink: false,
+            sessionEnded: true,
+            message: "This session was cancelled.",
+            startsAt: null,
+            accessOpensAt: null,
+            accessClosesAt: null,
+        };
+    }
+    const startsAt = new Date(input.startsAt);
+    const endsAt = new Date(input.endsAt);
+    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+        return {
+            canAccessLink: false,
+            sessionEnded: false,
+            message: "Session schedule is not set yet.",
+            startsAt: null,
+            accessOpensAt: null,
+            accessClosesAt: null,
+        };
+    }
+    const accessOpensAt = new Date(startsAt.getTime() - ACCESS_LEAD_MINUTES * 60 * 1000);
+    const accessClosesAt = endsAt;
+    const sessionEnded = now > accessClosesAt;
+    if (input.ticketStatus === "used") {
+        return {
+            canAccessLink: false,
+            sessionEnded: true,
+            message: "This session has ended.",
+            startsAt: startsAt.toISOString(),
+            accessOpensAt: accessOpensAt.toISOString(),
+            accessClosesAt: accessClosesAt.toISOString(),
+        };
+    }
+    if (sessionEnded) {
+        return {
+            canAccessLink: false,
+            sessionEnded: true,
+            message: "This session has ended.",
+            startsAt: startsAt.toISOString(),
+            accessOpensAt: accessOpensAt.toISOString(),
+            accessClosesAt: accessClosesAt.toISOString(),
+        };
+    }
+    if (now < accessOpensAt) {
+        return {
+            canAccessLink: false,
+            sessionEnded: false,
+            message: `Join link opens ${ACCESS_LEAD_MINUTES} minutes before this session starts.`,
+            startsAt: startsAt.toISOString(),
+            accessOpensAt: accessOpensAt.toISOString(),
+            accessClosesAt: accessClosesAt.toISOString(),
+        };
+    }
+    const hasLink = Boolean(String(input.meetingUrl ?? "").trim());
+    return {
+        canAccessLink: hasLink,
+        sessionEnded: false,
+        message: hasLink ? "Your join link is ready." : "The organizer has not added a meeting link for this session yet.",
+        startsAt: startsAt.toISOString(),
+        accessOpensAt: accessOpensAt.toISOString(),
+        accessClosesAt: accessClosesAt.toISOString(),
+    };
+}

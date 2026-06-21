@@ -15,6 +15,7 @@ import { getPaymentMethodForUser, maybeSavePaymentMethodFromCheckout } from "./p
 import { normalizeMalawiPhone } from "../utils/phone.js";
 import { fulfillResellSale } from "./resell.service.js";
 import { computePlatformServiceFee, } from "../utils/platform-fee.js";
+import { enrollUserTicketVirtualSessions, resolveVirtualCheckoutPricing, } from "./virtual-session-checkout.service.js";
 function platformServiceFeeForSubtotal(subtotalMwk) {
     return computePlatformServiceFee(subtotalMwk);
 }
@@ -158,13 +159,34 @@ export async function initiateCheckout(userId, listingId, input) {
     if (!isPurchasableStatus(String(listing.eventStatus ?? "draft"))) {
         throw new Error("This listing is not available for purchase.");
     }
-    const lineCount = listing.kind === "travel" && input.seatNumbers?.length
+    const lineCountBase = listing.kind === "travel" && input.seatNumbers?.length
         ? input.seatNumbers.length
         : input.qty;
+    let lineCount = lineCountBase;
     let unitPrice = Number(listing.price);
     let selectedTier = null;
+    let virtualSessionIds = [];
+    let enrollAllVirtualSessions = false;
     if (listing.kind === "event") {
         await assertListingEventDateActive(listingId);
+        const virtualPlan = await resolveVirtualCheckoutPricing({
+            id: listingId,
+            kind: listing.kind,
+            eventFormat: String(listing.eventFormat ?? "physical"),
+            virtualEventType: String(listing.virtualEventType ?? "one_time"),
+            virtualBuyMode: listing.virtualBuyMode,
+            virtualPricingMode: listing.virtualPricingMode,
+            price: Number(listing.price),
+            ticketTiers: listing.ticketTiers,
+        }, {
+            qty: input.qty,
+            tierId: input.tierId,
+            virtualSessionIds: input.virtualSessionIds,
+        });
+        lineCount = virtualPlan.lineCount;
+        unitPrice = virtualPlan.unitPrice;
+        virtualSessionIds = virtualPlan.selectedSessionIds;
+        enrollAllVirtualSessions = virtualPlan.enrollAllSessions;
         const tiers = listing.ticketTiers ?? [];
         if (tiers.length > 0) {
             let tierId = input.tierId?.trim() || undefined;
@@ -178,7 +200,9 @@ export async function initiateCheckout(userId, listingId, input) {
             if (!selectedTier)
                 throw new Error("Ticket type not found");
             await ticketTiersService.assertTierCheckoutCapacity(selectedTier.id, lineCount);
-            unitPrice = selectedTier.priceMwk;
+            if (!virtualPlan.virtualSessionSelection) {
+                unitPrice = selectedTier.priceMwk;
+            }
         }
     }
     await assertCheckoutCapacity(listingId, listing.kind, listing.ticketCapacity ?? null, lineCount);
@@ -196,17 +220,14 @@ export async function initiateCheckout(userId, listingId, input) {
         if (existingPending) {
             return resumePendingCheckout(userId, existingPending, listing.title);
         }
-        return await createCheckoutWithPayChangu(userId, listingId, listing, checkoutInput, conn, unitPrice, selectedTier);
+        return await createCheckoutWithPayChangu(userId, listingId, listing, checkoutInput, conn, unitPrice, selectedTier, lineCount, virtualSessionIds, enrollAllVirtualSessions);
     }
     finally {
         await conn.query(`SELECT RELEASE_LOCK(:lockKey)`, { lockKey });
         conn.release();
     }
 }
-async function createCheckoutWithPayChangu(userId, listingId, listing, input, conn, unitPrice, selectedTier) {
-    const lineCount = listing.kind === "travel" && input.seatNumbers?.length
-        ? input.seatNumbers.length
-        : input.qty;
+async function createCheckoutWithPayChangu(userId, listingId, listing, input, conn, unitPrice, selectedTier, lineCount, virtualSessionIds, enrollAllVirtualSessions) {
     const pricing = await pricingForCheckout(lineCount, unitPrice, listingId, input.referralCode);
     const { subtotal, serviceFee, total } = pricing;
     const orderId = uuid();
@@ -237,6 +258,8 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
         tierId: selectedTier?.id ?? null,
         tierName: selectedTier?.name ?? null,
         unitPrice,
+        virtualSessionIds,
+        enrollAllVirtualSessions,
     };
     if (listing.kind === "travel" && input.seatNumbers?.length) {
         for (const num of input.seatNumbers) {
@@ -473,6 +496,8 @@ async function fulfillCheckout(ledger) {
         const unitPrice = Number(meta.unitPrice ?? listing.price);
         const tierId = meta.tierId ?? null;
         const tierName = meta.tierName ?? null;
+        const virtualSessionIds = (meta.virtualSessionIds ?? []).filter(Boolean);
+        const enrollAllVirtualSessions = Boolean(meta.enrollAllVirtualSessions);
         const catalogSubtotal = Number(meta.subtotal ?? unitPrice * lineCount);
         const catalogServiceFee = Number(meta.serviceFee ?? platformServiceFeeForSubtotal(catalogSubtotal));
         const catalogTotal = Number(meta.catalogTotal ?? catalogSubtotal + catalogServiceFee);
@@ -541,6 +566,12 @@ async function fulfillCheckout(ledger) {
                     amount,
                 });
                 ticketIds.push(ticketId);
+                const isOngoingVirtual = listing.kind === "event" &&
+                    listing.eventFormat === "virtual" &&
+                    (listing.virtualEventType ?? "one_time") === "ongoing";
+                if (isOngoingVirtual && virtualSessionIds.length > 0) {
+                    await enrollUserTicketVirtualSessions(conn, ticketId, virtualSessionIds);
+                }
             }
         }
         await conn.query(`UPDATE orders SET status = 'confirmed' WHERE id = :orderId`, { orderId: ledger.order_id });

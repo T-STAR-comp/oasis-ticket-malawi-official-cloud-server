@@ -1,7 +1,19 @@
 import nodemailer from "nodemailer";
 import { env } from "../config/env.js";
 let transporter = null;
+let smtpUnavailable = false;
+let smtpUnavailableLogged = false;
+function logSmtpUnavailable(reason) {
+    smtpUnavailable = true;
+    transporter = null;
+    if (!smtpUnavailableLogged) {
+        smtpUnavailableLogged = true;
+        console.warn(`[email] SMTP unavailable (${reason}) — emails will be logged to console only.`);
+    }
+}
 function getTransporter() {
+    if (smtpUnavailable)
+        return null;
     if (!env.mail.host || !env.mail.user) {
         console.warn("[email] SMTP not configured — emails will be logged to console only.");
         return null;
@@ -15,6 +27,12 @@ function getTransporter() {
         });
     }
     return transporter;
+}
+function isSmtpTransportError(err) {
+    if (!err || typeof err !== "object")
+        return false;
+    const code = "code" in err ? String(err.code) : "";
+    return code === "EAUTH" || code === "ESOCKET" || code === "ECONNECTION" || code === "ETIMEDOUT";
 }
 function wrapHtml(title, body) {
     return `<!DOCTYPE html><html><body style="font-family:system-ui,sans-serif;color:#111;max-width:560px;margin:0 auto;padding:24px">
@@ -30,8 +48,19 @@ export async function sendEmail(to, subject, html) {
         console.log(`[email] To: ${to} | Subject: ${subject}\n${html.replace(/<[^>]+>/g, " ")}`);
         return { sent: false, logged: true };
     }
-    await transport.sendMail({ from, to, subject, html });
-    return { sent: true };
+    try {
+        await transport.sendMail({ from, to, subject, html });
+        return { sent: true };
+    }
+    catch (err) {
+        if (isSmtpTransportError(err)) {
+            const reason = err instanceof Error ? err.message : "transport error";
+            logSmtpUnavailable(reason);
+            console.log(`[email] To: ${to} | Subject: ${subject}\n${html.replace(/<[^>]+>/g, " ")}`);
+            return { sent: false, logged: true };
+        }
+        throw err;
+    }
 }
 export async function sendLoginCode(email, fullName, code) {
     return sendEmail(email, "Your Ticket Malawi sign-in code", wrapHtml("Sign-in security code", `<p>Hi ${fullName},</p>
@@ -119,6 +148,35 @@ export async function sendEventReminderEmail(input) {
          <li><strong>Reference:</strong> ${input.reference}${input.seat ? ` · Seat ${input.seat}` : ""}</li>
        </ul>
        <p>Open your Ticket Malawi dashboard to view your ticket and QR code before you travel or attend.</p>`));
+}
+export async function sendVirtualJoinReminderEmail(input) {
+    return sendEmail(input.email, `Starting soon: ${input.listingTitle}`, wrapHtml("Your virtual event starts soon", `<p>Hi ${input.fullName},</p>
+       <p>Your virtual event <strong>${input.listingTitle}</strong> starts in a few minutes.</p>
+       <ul style="padding-left:18px;line-height:1.6">
+         <li><strong>When:</strong> ${input.dateLabel}${input.timeLabel ? ` · ${input.timeLabel}` : ""}</li>
+         <li><strong>Reference:</strong> ${input.reference}</li>
+       </ul>
+       <p>
+         <a href="${input.meetingUrl}" style="display:inline-block;background:#1e40af;color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none;font-weight:700">
+           Go to event
+         </a>
+       </p>
+       <p>If the button does not work, copy this link: ${input.meetingUrl}</p>`));
+}
+export async function sendOrganizerMissingSessionLinkReminderEmail(input) {
+    const urgency = input.hoursLeft <= 4 ? "Urgent" : "Reminder";
+    const cta = input.dashboardUrl
+        ? `<p><a href="${input.dashboardUrl}" style="display:inline-block;background:#1e40af;color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none;font-weight:700">Update session link</a></p>`
+        : "";
+    return sendEmail(input.email, `${urgency}: add virtual session link for ${input.listingTitle}`, wrapHtml("Session meeting link needed", `<p>Hi ${input.organizerName},</p>
+       <p>The upcoming session for <strong>${input.listingTitle}</strong> does not have a meeting link yet.</p>
+       <ul style="padding-left:18px;line-height:1.6">
+         <li><strong>Session:</strong> ${input.sessionTitle}</li>
+         <li><strong>Starts:</strong> ${input.startsAtLabel} (Malawi time)</li>
+         <li><strong>Time remaining:</strong> ${input.hoursLeft} hour(s)</li>
+       </ul>
+       <p>Please add the session link as soon as possible so attendees can join on time.</p>
+       ${cta}`));
 }
 export async function sendOrganizerSuspensionEmail(email, companyName, reason, until) {
     const untilLine = until

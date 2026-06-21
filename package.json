@@ -32,6 +32,8 @@
     "db:migrate:virtual": "node scripts/run-sql.js database/migration-v17-virtual-events.sql",
     "db:migrate:virtual-payout": "node scripts/run-sql.js database/migration-v18-virtual-payout-verify.sql",
     "db:migrate:firebase-auth": "node scripts/run-sql.js database/migration-v19-firebase-auth.sql",
+    "db:migrate:virtual-sessions": "node scripts/run-sql.js database/migration-v20-virtual-sessions-reminders.sql",
+    "db:migrate:ticket-virtual-sessions": "node scripts/run-sql.js database/migration-v21-user-ticket-virtual-sessions.sql",
     "photos:optimize": "node scripts/optimize-marketing-photos.mjs"
   },
   "dependencies": {
