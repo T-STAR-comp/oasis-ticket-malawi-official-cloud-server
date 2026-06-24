@@ -50,6 +50,7 @@ async function upsertFirebaseUser(input) {
         if (existing.firebase_uid && existing.firebase_uid !== input.firebaseUid) {
             throw new Error("This email is linked to a different sign-in method");
         }
+        // Link Google to an existing email/password account (same email).
         await pool.query(`UPDATE users SET
          firebase_uid = :firebaseUid,
          email_verified = GREATEST(email_verified, :verified),
