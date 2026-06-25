@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IMAGE_BUCKET_URL_PREFIX } from "../config/images.js";
+import { buildListingSeoSnapshot, injectListingOgIntoHtml, listingIdForPath, siteOriginFromRequest, } from "../utils/listing-og.js";
 import { buildSeoSnapshot, injectSeoIntoHtml, seoPageForPath, } from "../utils/seo-snapshot.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 function resolveFrontendDir() {
@@ -72,16 +73,29 @@ export function registerFrontend(app, enabled) {
     app.get("*", async (req, res, next) => {
         if (!shouldServeSpaShell(req))
             return next();
-        const seoPage = seoPageForPath(req.path);
-        if (!seoPage) {
+        const listingId = listingIdForPath(req.path);
+        const seoPage = listingId ? null : seoPageForPath(req.path);
+        if (!listingId && !seoPage) {
             res.sendFile(path.join(frontendDir, "index.html"));
             return;
         }
         try {
             const template = fs.readFileSync(path.join(frontendDir, "index.html"), "utf8");
-            const snapshot = await buildSeoSnapshot(seoPage);
-            const html = injectSeoIntoHtml(template, snapshot);
+            let html;
+            if (listingId) {
+                const snapshot = await buildListingSeoSnapshot(listingId, siteOriginFromRequest(req));
+                if (!snapshot) {
+                    res.sendFile(path.join(frontendDir, "index.html"));
+                    return;
+                }
+                html = injectListingOgIntoHtml(template, snapshot);
+            }
+            else {
+                const snapshot = await buildSeoSnapshot(seoPage);
+                html = injectSeoIntoHtml(template, snapshot);
+            }
             res.setHeader("Content-Type", "text/html; charset=utf-8");
+            res.setHeader("Cache-Control", "public, max-age=60");
             res.send(html);
         }
         catch (err) {
