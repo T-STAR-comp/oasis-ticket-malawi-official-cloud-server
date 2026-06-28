@@ -1,21 +1,28 @@
-LOCAL DEV
----------
-cd ticket-malawi-cloud-server
-SERVE_FRONTEND=true in .env
-npm run dev
-
 SHIP TO PRODUCTION (before git push)
 ------------------------------------
 npm run ship
 (uses 8GB Node heap for frontend build — close other apps if OOM)
 
-This builds the main app into public/client/ and compiles dist/.
-Commit and push both folders with your code changes.
+This builds:
+  - Main app     → public/client/
+  - Admin panel  → public/admin/   (https://ticketmalawi.com/admin/)
+  - API          → dist/
 
-DATABASE (after deploy)
------------------------
-npm run db:migrate:login
-npm run db:migrate:tiers
+Commit and push public/client/, public/admin/, and dist/ with your code changes.
+
+DATABASE (after deploy on production)
+-------------------------------------
+npm run db:migrate:service-fee-settings
+(and any other pending migrations)
+
+VERIFY DEPLOY
+-------------
+GET https://ticketmalawi.com/api/health
+  apiVersion should be 3+
+  features.financeSettings should be true
+  features.adminUi should be true
+
+Admin panel URL: https://ticketmalawi.com/admin/
 
 CPANEL / SPACESHIP
 ------------------

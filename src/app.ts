@@ -25,9 +25,10 @@ import { pool } from "./db/pool.js";
 import { LEGAL_VERSION } from "./config/legal.js";
 import * as platformSettingsService from "./services/platform-settings.service.js";
 import { registerFrontend } from "./middleware/serveFrontend.js";
+import { registerAdminFrontend } from "./middleware/serveAdmin.js";
 
 /** Bump when deploy verification fields on /api/health change. */
-export const API_BUILD_VERSION = 2;
+export const API_BUILD_VERSION = 3;
 
 export function createApp() {
   const app = express();
@@ -65,6 +66,26 @@ export function createApp() {
       } catch {
         resellReady = false;
       }
+      let financeSettingsReady = false;
+      try {
+        const [tables] = await pool.query<import("mysql2").RowDataPacket[]>(
+          `SELECT 1 FROM information_schema.tables
+           WHERE table_schema = DATABASE() AND table_name = 'platform_settings'
+           LIMIT 1`,
+        );
+        financeSettingsReady = tables.length > 0;
+      } catch {
+        financeSettingsReady = false;
+      }
+      const adminDir = path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "..",
+        "public",
+        "admin",
+        "index.html",
+      );
+      const adminUiReady = fs.existsSync(adminDir);
       res.setHeader("Cache-Control", "no-store");
       const distApp = path.join(path.dirname(fileURLToPath(import.meta.url)), "app.js");
       let builtAt: string | undefined;
@@ -82,6 +103,8 @@ export function createApp() {
         features: {
           checkoutUsesProfile: true,
           resell: resellReady,
+          financeSettings: financeSettingsReady,
+          adminUi: adminUiReady,
         },
       });
     } catch {
@@ -128,6 +151,7 @@ export function createApp() {
   app.use("/api/resell", resellRouter);
   app.use("/api/self-checkin", selfCheckinRouter);
 
+  registerAdminFrontend(app, env.serveFrontend);
   registerFrontend(app, env.serveFrontend);
 
   app.use(errorHandler);

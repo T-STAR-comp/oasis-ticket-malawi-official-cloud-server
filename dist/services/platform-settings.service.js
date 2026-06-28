@@ -2,13 +2,25 @@ import { v4 as uuid } from "uuid";
 import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
 async function getSetting(key) {
-    const [rows] = await pool.query(`SELECT setting_value FROM platform_settings WHERE setting_key = :key LIMIT 1`, { key });
-    return rows[0] ? String(rows[0].setting_value) : null;
+    try {
+        const [rows] = await pool.query(`SELECT setting_value FROM platform_settings WHERE setting_key = :key LIMIT 1`, { key });
+        return rows[0] ? String(rows[0].setting_value) : null;
+    }
+    catch (err) {
+        console.warn("[platform-settings] Could not read setting", key, err);
+        return null;
+    }
 }
 async function setSetting(key, value, adminId) {
-    await pool.query(`INSERT INTO platform_settings (setting_key, setting_value, updated_by)
-     VALUES (:key, :value, :adminId)
-     ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`, { key, value, adminId: adminId ?? null });
+    try {
+        await pool.query(`INSERT INTO platform_settings (setting_key, setting_value, updated_by)
+       VALUES (:key, :value, :adminId)
+       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`, { key, value, adminId: adminId ?? null });
+    }
+    catch (err) {
+        console.error("[platform-settings] Could not write setting", key, err);
+        throw new Error("Platform settings are not available. Run npm run db:migrate:service-fee-settings on the server.");
+    }
 }
 export async function getServiceFeeBearer() {
     const value = await getSetting("service_fee_bearer");
@@ -25,16 +37,21 @@ export async function setDynamicServiceFeeEnabled(enabled, adminId) {
     await setSetting("dynamic_service_fee_enabled", enabled ? "true" : "false", adminId);
 }
 export async function listDynamicServiceFeeRanges() {
-    const [rows] = await pool.query(`SELECT id, min_mwk, max_mwk, fee_percent, sort_order
-     FROM dynamic_service_fee_ranges
-     ORDER BY sort_order ASC, min_mwk ASC`);
-    return rows.map((r) => ({
-        id: String(r.id),
-        minMwk: Number(r.min_mwk),
-        maxMwk: r.max_mwk == null ? null : Number(r.max_mwk),
-        feePercent: Number(r.fee_percent),
-        sortOrder: Number(r.sort_order),
-    }));
+    try {
+        const [rows] = await pool.query(`SELECT id, min_mwk, max_mwk, fee_percent, sort_order
+       FROM dynamic_service_fee_ranges
+       ORDER BY sort_order ASC, min_mwk ASC`);
+        return rows.map((r) => ({
+            id: String(r.id),
+            minMwk: Number(r.min_mwk),
+            maxMwk: r.max_mwk == null ? null : Number(r.max_mwk),
+            feePercent: Number(r.fee_percent),
+            sortOrder: Number(r.sort_order),
+        }));
+    }
+    catch {
+        return [];
+    }
 }
 export async function replaceDynamicServiceFeeRanges(ranges, adminId) {
     if (ranges.length === 0) {
@@ -93,21 +110,26 @@ export async function getOrganizerCustomServiceFee(organizerUserId) {
     return rows[0] ? Number(rows[0].fee_percent) : null;
 }
 export async function listOrganizerCustomServiceFees() {
-    const [rows] = await pool.query(`SELECT f.organizer_user_id, f.fee_percent, f.notes, f.updated_at,
-            u.email, u.full_name, op.company_name
-     FROM organizer_custom_service_fees f
-     JOIN users u ON u.id = f.organizer_user_id
-     LEFT JOIN organizer_profiles op ON op.user_id = f.organizer_user_id
-     ORDER BY f.updated_at DESC`);
-    return rows.map((r) => ({
-        organizerUserId: String(r.organizer_user_id),
-        email: String(r.email),
-        fullName: String(r.full_name),
-        companyName: r.company_name ? String(r.company_name) : null,
-        feePercent: Number(r.fee_percent),
-        notes: r.notes ? String(r.notes) : null,
-        updatedAt: String(r.updated_at),
-    }));
+    try {
+        const [rows] = await pool.query(`SELECT f.organizer_user_id, f.fee_percent, f.notes, f.updated_at,
+              u.email, u.full_name, op.company_name
+       FROM organizer_custom_service_fees f
+       JOIN users u ON u.id = f.organizer_user_id
+       LEFT JOIN organizer_profiles op ON op.user_id = f.organizer_user_id
+       ORDER BY f.updated_at DESC`);
+        return rows.map((r) => ({
+            organizerUserId: String(r.organizer_user_id),
+            email: String(r.email),
+            fullName: String(r.full_name),
+            companyName: r.company_name ? String(r.company_name) : null,
+            feePercent: Number(r.fee_percent),
+            notes: r.notes ? String(r.notes) : null,
+            updatedAt: String(r.updated_at),
+        }));
+    }
+    catch {
+        return [];
+    }
 }
 export async function lookupOrganizerByEmail(email) {
     const normalized = email.trim().toLowerCase();

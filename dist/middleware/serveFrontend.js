@@ -41,6 +41,8 @@ function shouldServeSpaShell(req) {
     const p = req.path;
     if (p.startsWith("/api"))
         return false;
+    if (p.startsWith("/admin"))
+        return false;
     if (p.startsWith(IMAGE_BUCKET_URL_PREFIX))
         return false;
     // Let express.static handle real files (hashed assets, icons, manifest).
