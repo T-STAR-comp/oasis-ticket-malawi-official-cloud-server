@@ -1,4 +1,5 @@
 import { pool } from "../db/pool.js";
+import { EXCLUDE_RESALE_ORDERS_SQL } from "../utils/settlement-filters.js";
 const PUBLIC_STATUSES = ["published", "sold_out", "cancelled", "postponed"];
 /**
  * Published listings are always publicly browsable (including after capacity increases).
@@ -78,6 +79,42 @@ export async function syncListingSoldOutStatus(listingId, kind, ticketCapacity) 
     if (soldCount >= capacity) {
         await pool.query(`UPDATE listings SET status = 'sold_out'
        WHERE id = :listingId AND status IN ('published', 'sold_out')`, { listingId });
+    }
+}
+export async function assertFulfillmentCapacity(conn, listingId, kind, ticketCapacity, requestedUnits, excludeOrderId) {
+    const capacity = await resolveTicketCapacity(listingId, kind, ticketCapacity);
+    if (capacity == null)
+        return;
+    let soldCount = 0;
+    if (kind === "travel") {
+        const [soldRows] = await conn.query(`SELECT COUNT(*) AS cnt FROM seats s
+       JOIN seat_layouts sl ON sl.id = s.layout_id
+       WHERE sl.listing_id = :listingId AND s.status = 'taken'`, { listingId });
+        soldCount = Number(soldRows[0]?.cnt ?? 0);
+    }
+    else {
+        const [soldRows] = await conn.query(`SELECT COALESCE(SUM(oi.quantity), 0) AS cnt
+       FROM order_items oi
+       JOIN orders o ON o.id = oi.order_id
+       WHERE o.listing_id = :listingId AND o.status = 'confirmed'
+         ${EXCLUDE_RESALE_ORDERS_SQL}`, { listingId });
+        soldCount = Number(soldRows[0]?.cnt ?? 0);
+    }
+    const [pendingRows] = await conn.query(`SELECT COALESCE(SUM(
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(pl.checkout_meta, '$.lineCount')) AS UNSIGNED)
+     ), 0) AS cnt
+     FROM payment_ledger pl
+     JOIN orders o ON o.id = pl.order_id
+     WHERE o.listing_id = :listingId AND pl.status = 'pending' AND o.status = 'pending'
+       AND o.id != :excludeOrderId
+       ${EXCLUDE_RESALE_ORDERS_SQL}`, { listingId, excludeOrderId });
+    const pendingCount = Number(pendingRows[0]?.cnt ?? 0);
+    const available = capacity - soldCount - pendingCount;
+    if (requestedUnits > available) {
+        if (available <= 0) {
+            throw new Error("This event is sold out. No tickets remaining.");
+        }
+        throw new Error(`Only ${available} ticket${available === 1 ? "" : "s"} remaining. Reduce your quantity and try again.`);
     }
 }
 export async function assertCheckoutCapacity(listingId, kind, ticketCapacity, requestedUnits) {

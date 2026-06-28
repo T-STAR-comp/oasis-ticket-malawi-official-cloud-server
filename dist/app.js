@@ -23,6 +23,7 @@ import { resellRouter } from "./routes/resell.routes.js";
 import { selfCheckinRouter } from "./routes/self-checkin.routes.js";
 import { pool } from "./db/pool.js";
 import { LEGAL_VERSION } from "./config/legal.js";
+import * as platformSettingsService from "./services/platform-settings.service.js";
 import { registerFrontend } from "./middleware/serveFrontend.js";
 /** Bump when deploy verification fields on /api/health change. */
 export const API_BUILD_VERSION = 2;
@@ -80,13 +81,15 @@ export function createApp() {
             res.status(503).json({ success: false, service: "ticket-malawi-cloud-server", database: "disconnected" });
         }
     });
-    app.get("/api/config/public", (_req, res) => {
+    app.get("/api/config/public", async (_req, res) => {
+        const serviceFeeBearer = await platformSettingsService.getServiceFeeBearer();
         res.json({
             success: true,
             data: {
                 paychanguMock: env.paychangu.mock,
                 mockPaymentAmountMwk: env.paychangu.mock ? env.paychangu.mockPaymentAmountMwk : null,
                 platformServiceFeePercent: env.platformServiceFeePercent,
+                serviceFeeBearer,
                 referralPayoutFeePercent: env.referrals.payoutFeePercent,
                 authProvider: env.auth.provider,
                 firebaseAuthEnabled: env.firebase.enabled,

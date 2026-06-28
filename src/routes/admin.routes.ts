@@ -6,6 +6,8 @@ import * as moderationService from "../services/moderation.service.js";
 import * as financeService from "../services/finance.service.js";
 import * as careersService from "../services/careers.service.js";
 import * as virtualPayoutService from "../services/virtual-payout.service.js";
+import * as platformSettingsService from "../services/platform-settings.service.js";
+import * as adminInformationService from "../services/admin-information.service.js";
 import { requireAuth, requireRole, signToken, type AuthedRequest } from "../middleware/auth.js";
 import { fail, ok } from "../utils/http.js";
 
@@ -375,6 +377,126 @@ adminRouter.post("/virtual-events/:listingId/verify-payout", async (req, res, ne
       if (err.message === "Virtual event not found") return fail(res, err.message, 404);
       return fail(res, err.message, 400);
     }
+    next(err);
+  }
+});
+
+adminRouter.get("/finance/settings", async (_req, res, next) => {
+  try {
+    return ok(res, await platformSettingsService.getFinanceSettingsSnapshot());
+  } catch (err) {
+    next(err);
+  }
+});
+
+adminRouter.patch("/finance/settings/service-fee-bearer", async (req, res, next) => {
+  try {
+    const admin = (req as AuthedRequest).user!;
+    const { bearer } = z.object({ bearer: z.enum(["buyer", "organizer"]) }).parse(req.body);
+    await platformSettingsService.setServiceFeeBearer(bearer, admin.id);
+    return ok(res, { serviceFeeBearer: bearer });
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid bearer value", 400);
+    next(err);
+  }
+});
+
+adminRouter.patch("/finance/settings/dynamic-service-fee", async (req, res, next) => {
+  try {
+    const admin = (req as AuthedRequest).user!;
+    const body = z
+      .object({
+        enabled: z.boolean(),
+        ranges: z
+          .array(
+            z.object({
+              minMwk: z.number().int().min(0),
+              maxMwk: z.number().int().min(0).nullable(),
+              feePercent: z.number().min(0).max(100),
+            }),
+          )
+          .optional(),
+      })
+      .parse(req.body);
+
+    if (body.enabled) {
+      if (!body.ranges?.length) {
+        return fail(res, "Provide at least one range when enabling dynamic service fees", 400);
+      }
+      await platformSettingsService.replaceDynamicServiceFeeRanges(body.ranges, admin.id);
+    } else {
+      await platformSettingsService.setDynamicServiceFeeEnabled(false, admin.id);
+    }
+
+    return ok(res, await platformSettingsService.getFinanceSettingsSnapshot());
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid dynamic fee settings", 400);
+    if (err instanceof Error) return fail(res, err.message, 400);
+    next(err);
+  }
+});
+
+adminRouter.get("/finance/custom-service-fees/lookup", async (req, res, next) => {
+  try {
+    const email = String(req.query.email ?? "").trim();
+    if (!email) return fail(res, "Email is required", 400);
+    const organizer = await platformSettingsService.lookupOrganizerByEmail(email);
+    if (!organizer) return fail(res, "No organizer found with that email", 404);
+    return ok(res, organizer);
+  } catch (err) {
+    next(err);
+  }
+});
+
+adminRouter.put("/finance/custom-service-fees", async (req, res, next) => {
+  try {
+    const admin = (req as AuthedRequest).user!;
+    const body = z
+      .object({
+        email: z.string().email(),
+        feePercent: z.number().min(0).max(100),
+        notes: z.string().max(255).optional(),
+      })
+      .parse(req.body);
+    const organizer = await platformSettingsService.lookupOrganizerByEmail(body.email);
+    if (!organizer) return fail(res, "No organizer found with that email", 404);
+    await platformSettingsService.setOrganizerCustomServiceFee(
+      organizer.organizerUserId,
+      body.feePercent,
+      admin.id,
+      body.notes,
+    );
+    return ok(res, await platformSettingsService.getFinanceSettingsSnapshot());
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid custom fee payload", 400);
+    if (err instanceof Error) return fail(res, err.message, 400);
+    next(err);
+  }
+});
+
+adminRouter.delete("/finance/custom-service-fees/:organizerUserId", async (req, res, next) => {
+  try {
+    await platformSettingsService.removeOrganizerCustomServiceFee(req.params.organizerUserId);
+    return ok(res, await platformSettingsService.getFinanceSettingsSnapshot());
+  } catch (err) {
+    if (err instanceof Error) return fail(res, err.message, 404);
+    next(err);
+  }
+});
+
+adminRouter.post("/information/send-email", async (req, res, next) => {
+  try {
+    const body = z
+      .object({
+        audience: z.enum(["organizers", "users", "all"]),
+        subject: z.string().min(1).max(200),
+        bodyHtml: z.string().min(1).max(20000),
+      })
+      .parse(req.body);
+    return ok(res, await adminInformationService.sendAdminBroadcastEmail(body));
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid email payload", 400);
+    if (err instanceof Error) return fail(res, err.message, 400);
     next(err);
   }
 });

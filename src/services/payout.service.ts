@@ -5,6 +5,7 @@ import { PAYCHANGU_BANK_OPTIONS } from "../lib/paychangu-banks.js";
 import { pool, type QueryParams } from "../db/pool.js";
 import * as emailService from "./email.service.js";
 import { getOrganizerSettlementBalances } from "./settlement.service.js";
+import { withPayoutLock } from "./payout-lock.service.js";
 
 const MAX_VERIFY_ATTEMPTS = 5;
 const VERIFY_TTL_MS = 15 * 60 * 1000;
@@ -284,17 +285,6 @@ export async function confirmPayoutVerification(
   }
 
   const amount = Number(row.amount_mwk);
-  try {
-    await assertWithdrawable(organizerId, amount);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : "Not eligible for this payout amount";
-    await pool.query(
-      `UPDATE payout_verifications SET status = 'failed', failure_reason = :reason WHERE id = :verificationId`,
-      { verificationId, reason },
-    );
-    throw err;
-  }
-
   const destination: PayoutDestination = {
     bankUuid: row.bank_uuid as string,
     bankName: row.bank_name as string,
@@ -303,7 +293,20 @@ export async function confirmPayoutVerification(
     branch: (row.branch as string | null) ?? undefined,
   };
 
-  const result = await executePayout(organizerId, amount, destination);
+  const result = await withPayoutLock(`payout:organizer:${organizerId}`, async () => {
+    try {
+      await assertWithdrawable(organizerId, amount);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : "Not eligible for this payout amount";
+      await pool.query(
+        `UPDATE payout_verifications SET status = 'failed', failure_reason = :reason WHERE id = :verificationId`,
+        { verificationId, reason },
+      );
+      throw err;
+    }
+
+    return executePayout(organizerId, amount, destination);
+  });
 
   await pool.query(
     `UPDATE payout_verifications
@@ -370,20 +373,51 @@ async function executePayout(
     throw new Error("PayChangu API key is not configured");
   }
 
-  const res = await fetch(`${env.paychangu.baseUrl}/direct-charge/payouts/initialize`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({
-      payout_method: "bank_transfer",
-      bank_uuid: destination.bankUuid,
+  await pool.query(
+    `INSERT INTO organizer_payouts (
+      id, organizer_id, amount_mwk, status, paychangu_charge_id, payout_method,
+      bank_uuid, bank_account_name, bank_account_number, provider_status
+    ) VALUES (
+      :id, :organizerId, :amount, 'processing', :chargeId, 'bank_transfer',
+      :bankUuid, :accountName, :accountNumber, 'initiated'
+    )`,
+    {
+      id: payoutId,
+      organizerId,
       amount,
-      charge_id: chargeId,
-      bank_account_name: destination.accountName,
-      bank_account_number: destination.accountNumber,
-    }),
-  });
+      chargeId,
+      bankUuid: destination.bankUuid,
+      accountName: destination.accountName,
+      accountNumber: destination.accountNumber,
+    } satisfies QueryParams,
+  );
 
-  const text = await res.text();
+  let res: Response;
+  let text: string;
+  try {
+    res = await fetch(`${env.paychangu.baseUrl}/direct-charge/payouts/initialize`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        payout_method: "bank_transfer",
+        bank_uuid: destination.bankUuid,
+        amount,
+        charge_id: chargeId,
+        bank_account_name: destination.accountName,
+        bank_account_number: destination.accountNumber,
+      }),
+    });
+    text = await res.text();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "PayChangu could not start the payout";
+    await pool.query(
+      `UPDATE organizer_payouts SET status = 'failed', failure_reason = :reason, provider_status = 'failed'
+       WHERE id = :id`,
+      { id: payoutId, reason: message },
+    );
+    throw new Error(message);
+  }
+
   let body: Record<string, unknown> = {};
   try {
     body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
@@ -395,6 +429,11 @@ async function executePayout(
   if (!res.ok || topStatus === "failed") {
     const message =
       typeof body.message === "string" ? body.message : "PayChangu could not start the payout";
+    await pool.query(
+      `UPDATE organizer_payouts SET status = 'failed', failure_reason = :reason, provider_status = 'failed'
+       WHERE id = :id`,
+      { id: payoutId, reason: message },
+    );
     throw new Error(message);
   }
 
@@ -403,23 +442,8 @@ async function executePayout(
   );
 
   await pool.query(
-    `INSERT INTO organizer_payouts (
-      id, organizer_id, amount_mwk, status, paychangu_charge_id, payout_method,
-      bank_uuid, bank_account_name, bank_account_number, provider_status
-    ) VALUES (
-      :id, :organizerId, :amount, 'processing', :chargeId, 'bank_transfer',
-      :bankUuid, :accountName, :accountNumber, :providerStatus
-    )`,
-    {
-      id: payoutId,
-      organizerId,
-      amount,
-      chargeId,
-      bankUuid: destination.bankUuid,
-      accountName: destination.accountName,
-      accountNumber: destination.accountNumber,
-      providerStatus,
-    } satisfies QueryParams,
+    `UPDATE organizer_payouts SET provider_status = :providerStatus WHERE id = :id`,
+    { id: payoutId, providerStatus },
   );
 
   return {

@@ -34,6 +34,8 @@
     "db:migrate:firebase-auth": "node scripts/run-sql.js database/migration-v19-firebase-auth.sql",
     "db:migrate:virtual-sessions": "node scripts/run-sql.js database/migration-v20-virtual-sessions-reminders.sql",
     "db:migrate:ticket-virtual-sessions": "node scripts/run-sql.js database/migration-v21-user-ticket-virtual-sessions.sql",
+    "db:migrate:resell-pending": "node scripts/run-sql.js database/migration-v22-resell-pending-sale.sql",
+    "db:migrate:service-fee-settings": "node scripts/run-sql.js database/migration-v23-service-fee-settings.sql",
     "photos:optimize": "node scripts/optimize-marketing-photos.mjs"
   },
   "dependencies": {

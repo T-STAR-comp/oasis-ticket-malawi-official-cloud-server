@@ -7,6 +7,7 @@ import * as emailService from "./email.service.js";
 import { getReferrerFinance } from "./referrer-finance.service.js";
 import type { PayoutDestination } from "./payout.service.js";
 import { listAvailableBanks } from "./payout.service.js";
+import { withPayoutLock } from "./payout-lock.service.js";
 
 const MAX_VERIFY_ATTEMPTS = 5;
 const VERIFY_TTL_MS = 15 * 60 * 1000;
@@ -225,8 +226,6 @@ export async function confirmReferrerPayoutVerification(
   const platformFeeMwk = Number(row.platform_fee_mwk);
   const netToBank = amount - platformFeeMwk;
 
-  await assertReferrerWithdrawable(userId, amount);
-
   const destination: PayoutDestination = {
     bankUuid: row.bank_uuid as string,
     bankName: row.bank_name as string,
@@ -235,7 +234,10 @@ export async function confirmReferrerPayoutVerification(
     branch: (row.branch as string | null) ?? undefined,
   };
 
-  const result = await executeReferrerPayout(userId, amount, platformFeeMwk, netToBank, destination);
+  const result = await withPayoutLock(`payout:referrer:${userId}`, async () => {
+    await assertReferrerWithdrawable(userId, amount);
+    return executeReferrerPayout(userId, amount, platformFeeMwk, netToBank, destination);
+  });
 
   await pool.query(
     `UPDATE referrer_payout_verifications SET status = 'completed', payout_id = :payoutId WHERE id = :verificationId`,
@@ -305,45 +307,13 @@ async function executeReferrerPayout(
 
   if (!env.paychangu.apiKey) throw new Error("PayChangu API key is not configured");
 
-  const res = await fetch(`${env.paychangu.baseUrl}/direct-charge/payouts/initialize`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({
-      payout_method: "bank_transfer",
-      bank_uuid: destination.bankUuid,
-      amount: netToBank,
-      charge_id: chargeId,
-      bank_account_name: destination.accountName,
-      bank_account_number: destination.accountNumber,
-    }),
-  });
-
-  const text = await res.text();
-  let body: Record<string, unknown> = {};
-  try {
-    body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-  } catch {
-    body = { message: text };
-  }
-
-  const topStatus = String(body.status ?? "").toLowerCase();
-  if (!res.ok || topStatus === "failed") {
-    throw new Error(
-      typeof body.message === "string" ? body.message : "PayChangu could not start the payout",
-    );
-  }
-
-  const providerStatus = String(
-    (body.data as Record<string, unknown> | undefined)?.status ?? topStatus ?? "processing",
-  );
-
   await pool.query(
     `INSERT INTO referrer_payouts (
       id, referrer_user_id, amount_mwk, platform_fee_mwk, status, paychangu_charge_id,
       bank_uuid, bank_account_name, bank_account_number, provider_status
     ) VALUES (
       :id, :userId, :gross, :platformFee, 'processing', :chargeId,
-      :bankUuid, :accountName, :accountNumber, :providerStatus
+      :bankUuid, :accountName, :accountNumber, 'initiated'
     )`,
     {
       id: payoutId,
@@ -354,8 +324,61 @@ async function executeReferrerPayout(
       bankUuid: destination.bankUuid,
       accountName: destination.accountName,
       accountNumber: destination.accountNumber,
-      providerStatus,
     },
+  );
+
+  let res: Response;
+  let text: string;
+  try {
+    res = await fetch(`${env.paychangu.baseUrl}/direct-charge/payouts/initialize`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        payout_method: "bank_transfer",
+        bank_uuid: destination.bankUuid,
+        amount: netToBank,
+        charge_id: chargeId,
+        bank_account_name: destination.accountName,
+        bank_account_number: destination.accountNumber,
+      }),
+    });
+    text = await res.text();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "PayChangu could not start the payout";
+    await pool.query(
+      `UPDATE referrer_payouts SET status = 'failed', failure_reason = :reason, provider_status = 'failed'
+       WHERE id = :id`,
+      { id: payoutId, reason: message },
+    );
+    throw new Error(message);
+  }
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  } catch {
+    body = { message: text };
+  }
+
+  const topStatus = String(body.status ?? "").toLowerCase();
+  if (!res.ok || topStatus === "failed") {
+    const message =
+      typeof body.message === "string" ? body.message : "PayChangu could not start the payout";
+    await pool.query(
+      `UPDATE referrer_payouts SET status = 'failed', failure_reason = :reason, provider_status = 'failed'
+       WHERE id = :id`,
+      { id: payoutId, reason: message },
+    );
+    throw new Error(message);
+  }
+
+  const providerStatus = String(
+    (body.data as Record<string, unknown> | undefined)?.status ?? topStatus ?? "processing",
+  );
+
+  await pool.query(
+    `UPDATE referrer_payouts SET provider_status = :providerStatus WHERE id = :id`,
+    { id: payoutId, providerStatus },
   );
 
   return {

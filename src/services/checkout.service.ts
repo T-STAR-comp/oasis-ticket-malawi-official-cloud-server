@@ -12,9 +12,12 @@ import {
 } from "./ledger.service.js";
 import {
   assertCheckoutCapacity,
+  assertFulfillmentCapacity,
   isPurchasableStatus,
   syncListingSoldOutStatus,
 } from "./capacity.service.js";
+import { failCheckoutWithRecovery } from "./payment-failure-refund.service.js";
+import { distributeTicketAmountPaid } from "../utils/ticket-amount-paid.js";
 import { assertListingEventDateActive, getListingById } from "./listings.service.js";
 import * as ticketTiersService from "./ticket-tiers.service.js";
 import { syncOrganizerRefundRecovery } from "./refund-recovery.service.js";
@@ -37,17 +40,19 @@ import {
 import { getProfile } from "./auth.service.js";
 import { getPaymentMethodForUser, maybeSavePaymentMethodFromCheckout } from "./payment-methods.service.js";
 import { normalizeMalawiPhone } from "../utils/phone.js";
-import { fulfillResellSale } from "./resell.service.js";
+import { fulfillResellSale, expireStaleResellListingHolds } from "./resell.service.js";
 import {
-  computePlatformServiceFee,
+  computePlatformServiceFeeWithPercent,
+  applyServiceFeeBearer,
+  resolveCheckoutServiceFee,
 } from "../utils/platform-fee.js";
 import {
   enrollUserTicketVirtualSessions,
   resolveVirtualCheckoutPricing,
 } from "./virtual-session-checkout.service.js";
 
-function platformServiceFeeForSubtotal(subtotalMwk: number): number {
-  return computePlatformServiceFee(subtotalMwk);
+function platformServiceFeeForSubtotal(subtotalMwk: number, percent: number): number {
+  return computePlatformServiceFeeWithPercent(subtotalMwk, percent);
 }
 
 export type CheckoutInput = {
@@ -117,10 +122,13 @@ async function pricingForCheckout(
   lineCount: number,
   unitPrice: number,
   listingId: string,
+  organizerId: string,
   referralCode?: string,
 ) {
   const catalogSubtotal = unitPrice * lineCount;
-  const catalogServiceFee = platformServiceFeeForSubtotal(catalogSubtotal);
+  const feeResolved = await resolveCheckoutServiceFee(organizerId, catalogSubtotal);
+  const catalogServiceFee = feeResolved.fee;
+  const mockTotal = env.paychangu.mock ? env.paychangu.mockPaymentAmountMwk : null;
 
   const referral = await resolveActiveReferral(listingId, referralCode);
   if (referral) {
@@ -129,63 +137,60 @@ async function pricingForCheckout(
       serviceFee: catalogServiceFee,
       referral,
     });
-    if (env.paychangu.mock) {
-      const mockTotal = env.paychangu.mockPaymentAmountMwk;
-      return {
-        subtotal: applied.organizerSubtotal,
-        serviceFee: catalogServiceFee,
-        total: mockTotal,
-        catalogSubtotal,
-        catalogServiceFee,
-        catalogTotal: applied.buyerSubtotal + catalogServiceFee,
-        referral: applied,
-        referrerUserId: referral.referrerUserId,
-      };
-    }
+    const priced = applyServiceFeeBearer({
+      organizerSubtotal: applied.organizerSubtotal,
+      buyerSubtotal: applied.buyerSubtotal,
+      serviceFee: catalogServiceFee,
+      bearer: feeResolved.bearer,
+      mockTotal,
+    });
     return {
-      subtotal: applied.organizerSubtotal,
-      serviceFee: applied.serviceFee,
-      total: applied.total,
+      ...priced,
       catalogSubtotal,
       catalogServiceFee,
-      catalogTotal: applied.buyerSubtotal + catalogServiceFee,
+      catalogTotal:
+        feeResolved.bearer === "organizer"
+          ? applied.buyerSubtotal
+          : applied.buyerSubtotal + catalogServiceFee,
       referral: applied,
       referrerUserId: referral.referrerUserId,
+      serviceFeePercent: feeResolved.percent,
+      serviceFeeSource: feeResolved.source,
+      serviceFeeBearer: feeResolved.bearer,
     };
   }
 
-  const catalogTotal = catalogSubtotal + catalogServiceFee;
-
-  if (env.paychangu.mock) {
-    const mockTotal = env.paychangu.mockPaymentAmountMwk;
-    return {
-      subtotal: mockTotal,
-      serviceFee: catalogServiceFee,
-      total: mockTotal,
-      catalogSubtotal,
-      catalogServiceFee,
-      catalogTotal,
-      referral: null,
-      referrerUserId: null,
-    };
-  }
+  const buyerSubtotal = catalogSubtotal;
+  const organizerSubtotal = catalogSubtotal;
+  const priced = applyServiceFeeBearer({
+    organizerSubtotal,
+    buyerSubtotal,
+    serviceFee: catalogServiceFee,
+    bearer: feeResolved.bearer,
+    mockTotal,
+  });
 
   return {
-    subtotal: catalogSubtotal,
-    serviceFee: catalogServiceFee,
-    total: catalogTotal,
+    ...priced,
     catalogSubtotal,
     catalogServiceFee,
-    catalogTotal,
+    catalogTotal:
+      feeResolved.bearer === "organizer"
+        ? catalogSubtotal
+        : catalogSubtotal + catalogServiceFee,
     referral: null,
     referrerUserId: null,
+    serviceFeePercent: feeResolved.percent,
+    serviceFeeSource: feeResolved.source,
+    serviceFeeBearer: feeResolved.bearer,
   };
 }
 
 export async function failStalePendingPayments() {
+  await expireStaleResellListingHolds();
   const expired = await listExpiredPendingLedgers();
   for (const ledger of expired) {
-    await failCheckout(ledger, "Payment timed out after 5 minutes without confirmation.");
+    await failCheckoutWithRecovery(ledger, "Payment timed out after 5 minutes without confirmation.");
   }
 }
 
@@ -211,6 +216,83 @@ async function resumePendingCheckout(userId: string, ledger: LedgerRow, listingT
       order.payment_method === "airtel"
         ? "Resuming your in-progress Airtel Money payment. Check your phone if you still have a PIN prompt."
         : "Resuming your in-progress TNM Mpamba payment. Check your phone if you still have a PIN prompt.",
+  };
+}
+
+export async function previewListingCheckoutPricing(
+  listingId: string,
+  input: {
+    qty: number;
+    seatNumbers?: number[];
+    tierId?: string;
+    referralCode?: string;
+    virtualSessionIds?: string[];
+  },
+) {
+  const listing = await getListingById(listingId, true);
+  if (!listing) throw new Error("Listing not found");
+
+  const lineCountBase =
+    listing.kind === "travel" && input.seatNumbers?.length
+      ? input.seatNumbers.length
+      : input.qty;
+
+  let lineCount = lineCountBase;
+  let unitPrice = Number(listing.price);
+
+  if (listing.kind === "event") {
+    const virtualPlan = await resolveVirtualCheckoutPricing(
+      {
+        id: listingId,
+        kind: listing.kind,
+        eventFormat: String(listing.eventFormat ?? "physical"),
+        virtualEventType: String(listing.virtualEventType ?? "one_time"),
+        virtualBuyMode: listing.virtualBuyMode,
+        virtualPricingMode: listing.virtualPricingMode,
+        price: Number(listing.price),
+        ticketTiers: (listing as { ticketTiers?: ticketTiersService.TicketTierRow[] }).ticketTiers,
+      },
+      {
+        qty: input.qty,
+        tierId: input.tierId,
+        virtualSessionIds: input.virtualSessionIds,
+      },
+    );
+
+    lineCount = virtualPlan.lineCount;
+    unitPrice = virtualPlan.unitPrice;
+
+    const tiers = (listing as { ticketTiers?: ticketTiersService.TicketTierRow[] }).ticketTiers ?? [];
+    if (tiers.length > 0) {
+      const tierId = input.tierId?.trim() || tiers[0]?.id;
+      if (tierId) {
+        const selectedTier = await ticketTiersService.resolveTier(listingId, tierId);
+        if (selectedTier && !virtualPlan.virtualSessionSelection) {
+          unitPrice = selectedTier.priceMwk;
+        }
+      }
+    }
+  }
+
+  const pricing = await pricingForCheckout(
+    lineCount,
+    unitPrice,
+    listingId,
+    listing.organizerId,
+    input.referralCode,
+  );
+
+  return {
+    unitPrice,
+    lineCount,
+    catalogSubtotal: pricing.catalogSubtotal,
+    serviceFee: pricing.serviceFee,
+    serviceFeePercent: pricing.serviceFeePercent,
+    serviceFeeBearer: pricing.serviceFeeBearer,
+    serviceFeeSource: pricing.serviceFeeSource,
+    total: pricing.total,
+    referralDiscount: pricing.referral?.buyerDiscount ?? 0,
+    buyerPaysServiceFee: pricing.serviceFeeBearer === "buyer",
   };
 }
 
@@ -351,9 +433,16 @@ async function createCheckoutWithPayChangu(
     lineCount,
     unitPrice,
     listingId,
+    listing.organizerId,
     input.referralCode,
   );
-  const { subtotal, serviceFee, total } = pricing;
+  const {
+    subtotal,
+    serviceFee,
+    total,
+    serviceFeePercent,
+    serviceFeeBearer,
+  } = pricing;
   const orderId = uuid();
   const ledgerId = uuid();
   const reference = makeReference(listingId);
@@ -384,6 +473,9 @@ async function createCheckoutWithPayChangu(
     tierName: selectedTier?.name ?? null,
     unitPrice,
     virtualSessionIds,
+    serviceFeePercent: pricing.serviceFeePercent,
+    serviceFeeBearer: pricing.serviceFeeBearer,
+    serviceFeeSource: pricing.serviceFeeSource,
     enrollAllVirtualSessions,
   };
 
@@ -401,15 +493,6 @@ async function createCheckoutWithPayChangu(
       }
     }
   }
-
-  const init = await initiateMobileMoneyCharge({
-    chargeId,
-    amount: total,
-    mobile: input.paymentPhone!,
-    operator: input.paymentMethod as MomoOperator,
-    email: input.contactEmail!,
-    fullName: input.contactName!,
-  });
 
   const timeoutSec = env.paychangu.pendingTimeoutSec;
   try {
@@ -432,11 +515,13 @@ async function createCheckoutWithPayChangu(
 
     await conn.query(
       `INSERT INTO orders (
-        id, user_id, listing_id, reference, status, subtotal_mwk, service_fee_mwk, total_mwk,
+        id, user_id, listing_id, reference, status, subtotal_mwk, service_fee_mwk, service_fee_bearer,
+        service_fee_percent_applied, total_mwk,
         payment_method, payment_phone, contact_name, contact_email, contact_phone, national_id,
         referral_id, referral_code, catalog_subtotal_mwk, referral_discount_mwk, referrer_commission_mwk
       ) VALUES (
-        :orderId, :userId, :listingId, :reference, 'pending', :subtotal, :serviceFee, :total,
+        :orderId, :userId, :listingId, :reference, 'pending', :subtotal, :serviceFee, :serviceFeeBearer,
+        :serviceFeePercent, :total,
         :paymentMethod, :paymentPhone, :contactName, :contactEmail, :contactPhone, :nationalId,
         :referralId, :referralCode, :catalogSubtotal, :referralDiscount, :referrerCommission
       )`,
@@ -447,6 +532,8 @@ async function createCheckoutWithPayChangu(
         reference,
         subtotal,
         serviceFee,
+        serviceFeeBearer,
+        serviceFeePercent,
         total,
         paymentMethod: input.paymentMethod,
         paymentPhone: input.paymentPhone ?? null,
@@ -464,21 +551,19 @@ async function createCheckoutWithPayChangu(
 
     await conn.query(
       `INSERT INTO payment_ledger (
-        id, user_id, order_id, status, paychangu_charge_id, paychangu_trans_id, paychangu_ref_id,
+        id, user_id, order_id, status, paychangu_charge_id,
         amount_mwk, payment_method, payment_phone, account_name, account_email, account_phone,
         checkout_meta, provider_status, expires_at
       ) VALUES (
-        :ledgerId, :userId, :orderId, 'pending', :chargeId, :transId, :refId,
+        :ledgerId, :userId, :orderId, 'pending', :chargeId,
         :amount, :paymentMethod, :paymentPhone, :accountName, :accountEmail, :accountPhone,
-        :checkoutMeta, :providerStatus, DATE_ADD(NOW(), INTERVAL ${timeoutSec} SECOND)
+        :checkoutMeta, 'initiated', DATE_ADD(NOW(), INTERVAL ${timeoutSec} SECOND)
       )`,
       {
         ledgerId,
         userId,
         orderId,
-        chargeId: init.chargeId,
-        transId: init.transId,
-        refId: init.refId,
+        chargeId,
         amount: total,
         paymentMethod: input.paymentMethod,
         paymentPhone: input.paymentPhone ?? null,
@@ -486,37 +571,73 @@ async function createCheckoutWithPayChangu(
         accountEmail: input.contactEmail,
         accountPhone: input.contactPhone,
         checkoutMeta: JSON.stringify(checkoutMeta),
-        providerStatus: init.providerStatus,
       } satisfies QueryParams,
     );
 
     await conn.commit();
-
-    await maybeSavePaymentMethodFromCheckout(userId, {
-      savePaymentMethod: input.savePaymentMethod,
-      paymentMethodId: input.paymentMethodId,
-      paymentMethod: input.paymentMethod,
-      paymentPhone: input.paymentPhone,
-    });
-
-    return {
-      orderId,
-      ledgerId,
-      reference,
-      total,
-      listingTitle: listing.title,
-      paymentStatus: "pending" as const,
-      paychanguChargeId: init.chargeId,
-      mockPayment: env.paychangu.mock,
-      message:
-        input.paymentMethod === "airtel"
-          ? "Check your phone for the Airtel Money PIN prompt."
-          : "Check your phone for the TNM Mpamba PIN prompt.",
-    };
   } catch (err) {
     await conn.rollback();
     throw err;
   }
+
+  let init;
+  try {
+    init = await initiateMobileMoneyCharge({
+      chargeId,
+      amount: total,
+      mobile: input.paymentPhone!,
+      operator: input.paymentMethod as MomoOperator,
+      email: input.contactEmail!,
+      fullName: input.contactName!,
+    });
+  } catch (err) {
+    await failCheckoutWithRecovery(
+      {
+        id: ledgerId,
+        order_id: orderId,
+        user_id: userId,
+        amount_mwk: total,
+        payment_method: input.paymentMethod,
+        payment_phone: input.paymentPhone ?? null,
+      } as LedgerRow,
+      err instanceof Error ? err.message : "Could not start mobile money payment",
+    );
+    throw err;
+  }
+
+  await pool.query(
+    `UPDATE payment_ledger
+     SET paychangu_trans_id = :transId, paychangu_ref_id = :refId, provider_status = :providerStatus
+     WHERE id = :ledgerId`,
+    {
+      ledgerId,
+      transId: init.transId,
+      refId: init.refId,
+      providerStatus: init.providerStatus,
+    },
+  );
+
+  await maybeSavePaymentMethodFromCheckout(userId, {
+    savePaymentMethod: input.savePaymentMethod,
+    paymentMethodId: input.paymentMethodId,
+    paymentMethod: input.paymentMethod,
+    paymentPhone: input.paymentPhone,
+  });
+
+  return {
+    orderId,
+    ledgerId,
+    reference,
+    total,
+    listingTitle: listing.title,
+    paymentStatus: "pending" as const,
+    paychanguChargeId: init.chargeId,
+    mockPayment: env.paychangu.mock,
+    message:
+      input.paymentMethod === "airtel"
+        ? "Check your phone for the Airtel Money PIN prompt."
+        : "Check your phone for the TNM Mpamba PIN prompt.",
+  };
 }
 
 export async function getOrderPaymentStatus(userId: string, orderId: string) {
@@ -619,7 +740,7 @@ export async function processPendingLedgerEntry(ledgerId: string) {
   const inGrace = ageMs < env.paychangu.verifyGraceMs;
 
   if (Number(row.secs_remaining) <= 0 && !inGrace) {
-    await failCheckout(row, "Payment timed out after 5 minutes without confirmation.");
+    await failCheckoutWithRecovery(row, "Payment timed out after 5 minutes without confirmation.");
     return;
   }
 
@@ -640,16 +761,17 @@ export async function processPendingLedgerEntry(ledgerId: string) {
       await fulfillCheckout(row);
     } catch (err) {
       console.error("[payment] fulfill failed after PayChangu success:", err);
-      await failCheckout(
+      await failCheckoutWithRecovery(
         row,
         err instanceof Error ? err.message : "Could not finalize tickets after payment",
+        { paymentSucceeded: true },
       );
     }
     return;
   }
 
   if (verify.failed && (terminalFailure || !inGrace)) {
-    await failCheckout(
+    await failCheckoutWithRecovery(
       row,
       verify.message || "Payment was cancelled or not completed.",
     );
@@ -712,14 +834,29 @@ async function fulfillCheckout(ledger: LedgerRow) {
     const enrollAllVirtualSessions = Boolean(meta.enrollAllVirtualSessions);
     const catalogSubtotal = Number(meta.subtotal ?? unitPrice * lineCount);
     const catalogServiceFee = Number(
-      meta.serviceFee ?? platformServiceFeeForSubtotal(catalogSubtotal),
+      meta.serviceFee ??
+        platformServiceFeeForSubtotal(
+          catalogSubtotal,
+          Number(meta.serviceFeePercent ?? env.platformServiceFeePercent),
+        ),
     );
     const catalogTotal = Number(meta.catalogTotal ?? catalogSubtotal + catalogServiceFee);
     const subtotal = catalogSubtotal;
+    const orderTotalCharged = Number(order.total_mwk ?? ledger.amount_mwk);
     const ticketIds: string[] = [];
 
     if (listing.kind === "travel" && seatNumbers.length) {
-      for (const num of seatNumbers) {
+      await assertFulfillmentCapacity(
+        conn,
+        listingId,
+        listing.kind,
+        listing.ticketCapacity ?? null,
+        seatNumbers.length,
+        ledger.order_id,
+      );
+      const travelAmounts = distributeTicketAmountPaid(orderTotalCharged, seatNumbers.length);
+      for (let si = 0; si < seatNumbers.length; si++) {
+        const num = seatNumbers[si];
         const [seatRows] = await conn.query<RowDataPacket[]>(
           `SELECT s.id, s.status FROM seats s
            JOIN seat_layouts sl ON sl.id = s.layout_id
@@ -756,12 +893,29 @@ async function fulfillCheckout(ledger: LedgerRow) {
             reference: order.reference,
             qrToken,
             seatNumber: num,
-            amount: unitPrice,
+            amount: travelAmounts[si] ?? unitPrice,
           },
         );
         ticketIds.push(ticketId);
       }
     } else {
+      await assertFulfillmentCapacity(
+        conn,
+        listingId,
+        listing.kind,
+        listing.ticketCapacity ?? null,
+        lineCount,
+        ledger.order_id,
+      );
+      if (tierId) {
+        await ticketTiersService.assertTierFulfillmentCapacity(
+          conn,
+          tierId,
+          lineCount,
+          ledger.order_id,
+        );
+      }
+
       const itemId = uuid();
       await conn.query(
         `INSERT INTO order_items (id, order_id, quantity, unit_price, line_total, ticket_tier_id)
@@ -776,10 +930,11 @@ async function fulfillCheckout(ledger: LedgerRow) {
         },
       );
 
+      const eventAmounts = distributeTicketAmountPaid(orderTotalCharged, lineCount);
       for (let i = 0; i < lineCount; i++) {
         const ticketId = uuid();
         const qrToken = makeQrToken();
-        const amount = unitPrice;
+        const amount = eventAmounts[i] ?? unitPrice;
         await conn.query(
           `INSERT INTO user_tickets (
              id, user_id, order_id, listing_id, ticket_tier_id, ticket_tier_name,
@@ -859,16 +1014,4 @@ async function fulfillCheckout(ledger: LedgerRow) {
   } finally {
     conn.release();
   }
-}
-
-async function failCheckout(ledger: LedgerRow, reason: string) {
-  await pool.query(
-    `UPDATE payment_ledger SET status = 'failed', failure_reason = :reason, provider_status = 'failed'
-     WHERE id = :ledgerId AND status = 'pending'`,
-    { ledgerId: ledger.id, reason },
-  );
-  await pool.query(
-    `UPDATE orders SET status = 'failed' WHERE id = :orderId AND status = 'pending'`,
-    { orderId: ledger.order_id },
-  );
 }

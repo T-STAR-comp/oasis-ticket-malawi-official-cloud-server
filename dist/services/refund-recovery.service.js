@@ -2,6 +2,7 @@ import { v4 as uuid } from "uuid";
 import { pool } from "../db/pool.js";
 import * as emailService from "./email.service.js";
 import { executeCustomerRefundPayment, refundPaymentMethodLabel, } from "./refund-payment.service.js";
+import { EXCLUDE_RESALE_ORDERS_SQL } from "../utils/settlement-filters.js";
 const PAYMENT_COMPLETED_AT = `COALESCE(pl.completed_at, o.updated_at, o.created_at)`;
 export async function getOrganizerRefundDebtSummary(organizerId) {
     const [rows] = await pool.query(`SELECT refund_debt_mwk, refund_recovered_mwk FROM organizer_profiles WHERE user_id = :organizerId`, { organizerId });
@@ -60,7 +61,8 @@ async function getSettledActiveEarnings(organizerId) {
      JOIN payment_ledger pl ON pl.order_id = o.id AND pl.status = 'completed'
      WHERE l.organizer_id = :organizerId
        AND o.status = 'confirmed'
-       AND l.status != 'cancelled'`, { organizerId });
+       AND l.status != 'cancelled'
+       ${EXCLUDE_RESALE_ORDERS_SQL}`, { organizerId });
     return Number(rows[0]?.settledActive ?? 0);
 }
 async function getPayoutTotals(organizerId) {

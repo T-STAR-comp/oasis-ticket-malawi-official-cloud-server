@@ -1,5 +1,6 @@
 import { pool } from "../db/pool.js";
 import { computeWithdrawableWithDebt, getSalesRecoveredFromSettledSales, syncOrganizerRefundRecovery, } from "./refund-recovery.service.js";
+import { EXCLUDE_RESALE_ORDERS_SQL } from "../utils/settlement-filters.js";
 import { getOrganizerVirtualPayoutHold, UNVERIFIED_VIRTUAL_PAYOUT_WHERE, } from "./virtual-payout.service.js";
 /**
  * PayChangu T+1 settlement: a payment completed on calendar day D becomes
@@ -66,7 +67,8 @@ export async function getOrganizerSettlementBalances(organizerId) {
      JOIN payment_ledger pl ON pl.order_id = o.id AND pl.status = 'completed'
      WHERE l.organizer_id = :organizerId
        AND o.status = 'confirmed'
-       AND l.status != 'cancelled'`, { organizerId });
+       AND l.status != 'cancelled'
+       ${EXCLUDE_RESALE_ORDERS_SQL}`, { organizerId });
     return mapBalances(rows[0], debt, salesRecovered, virtualPayoutHold);
 }
 export async function getPlatformSettlementBalances() {
@@ -90,7 +92,8 @@ export async function getPlatformSettlementBalances() {
        ) AS paidOut
      FROM orders o
      JOIN payment_ledger pl ON pl.order_id = o.id AND pl.status = 'completed'
-     WHERE o.status = 'confirmed'`);
+     WHERE o.status = 'confirmed'
+       ${EXCLUDE_RESALE_ORDERS_SQL}`);
     const emptyDebt = {
         refundDebt: 0,
         refundRecovered: 0,
@@ -118,6 +121,7 @@ export async function getOrganizerSettlementLines(organizerId, limit = 100) {
      JOIN listings l ON l.id = o.listing_id
      JOIN payment_ledger pl ON pl.order_id = o.id AND pl.status = 'completed'
      WHERE l.organizer_id = :organizerId AND o.status IN ('confirmed', 'refunded')
+       ${EXCLUDE_RESALE_ORDERS_SQL}
      ORDER BY ${PAYMENT_COMPLETED_AT} DESC
      LIMIT ${Number(limit)}`, { organizerId });
     return rows.map((r) => ({
@@ -146,6 +150,7 @@ export async function getAdminSettlementByOrganizer() {
      FROM organizer_profiles op
      LEFT JOIN listings l ON l.organizer_id = op.user_id
      LEFT JOIN orders o ON o.listing_id = l.id AND o.status = 'confirmed'
+       ${EXCLUDE_RESALE_ORDERS_SQL}
      LEFT JOIN payment_ledger pl ON pl.order_id = o.id AND pl.status = 'completed'
      GROUP BY op.user_id, op.company_name, op.refund_debt_mwk, op.refund_recovered_mwk
      HAVING totalEarnings > 0

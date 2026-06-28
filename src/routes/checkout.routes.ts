@@ -44,6 +44,46 @@ const accessQuerySchema = z.object({
 
 export const checkoutRouter = Router();
 
+const pricingQuerySchema = z.object({
+  qty: z.coerce.number().int().min(1).max(20).default(1),
+  seats: z.string().optional(),
+  tierId: optionalTierId(),
+  referralCode: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().min(2).max(64).optional(),
+  ),
+  virtualSessions: z.string().optional(),
+});
+
+/** GET /api/checkout/:listingId/pricing — server-side fee preview (default / custom / dynamic) */
+checkoutRouter.get("/:listingId/pricing", async (req, res, next) => {
+  try {
+    const listingId = String(req.params.listingId);
+    const query = pricingQuerySchema.parse(req.query);
+    const seatNumbers = query.seats
+      ? query.seats.split(",").map((s) => Number(s.trim())).filter((n) => n > 0)
+      : undefined;
+    const virtualSessionIds = query.virtualSessions
+      ? query.virtualSessions.split(",").filter(Boolean)
+      : undefined;
+
+    const pricing = await checkoutService.previewListingCheckoutPricing(listingId, {
+      qty: query.qty,
+      seatNumbers,
+      tierId: query.tierId,
+      referralCode: query.referralCode,
+      virtualSessionIds,
+    });
+    return ok(res, pricing);
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid pricing request", 400);
+    if (err instanceof Error && err.message.includes("not found")) {
+      return fail(res, err.message, 404);
+    }
+    next(err);
+  }
+});
+
 /** GET /api/checkout/:listingId/referral — validate referral code */
 checkoutRouter.get("/:listingId/referral", async (req, res, next) => {
   try {

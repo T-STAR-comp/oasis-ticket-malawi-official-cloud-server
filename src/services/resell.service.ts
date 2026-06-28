@@ -225,7 +225,7 @@ export async function getSellerResellFinance(userId: string) {
 
   const paidOut = payouts
     .filter((p) => p.status === "completed")
-    .reduce((sum, p) => sum + Number(p.net_amount_mwk), 0);
+    .reduce((sum, p) => sum + Number(p.amount_mwk), 0);
   const reserved = payouts
     .filter((p) => ["pending", "processing"].includes(String(p.status)))
     .reduce((sum, p) => sum + Number(p.amount_mwk), 0);
@@ -284,6 +284,35 @@ async function resolveCheckoutPhone(
   return phone;
 }
 
+export async function releaseResellListingHoldForOrder(orderId: string) {
+  await pool.query(
+    `UPDATE resell_listings
+     SET status = 'active',
+         pending_buyer_id = NULL,
+         pending_order_id = NULL,
+         pending_expires_at = NULL
+     WHERE pending_order_id = :orderId AND status = 'pending_sale'`,
+    { orderId },
+  );
+}
+
+export async function expireStaleResellListingHolds() {
+  await pool.query(
+    `UPDATE resell_listings rl
+     SET rl.status = 'active',
+         rl.pending_buyer_id = NULL,
+         rl.pending_order_id = NULL,
+         rl.pending_expires_at = NULL
+     WHERE rl.status = 'pending_sale'
+       AND rl.pending_expires_at IS NOT NULL
+       AND rl.pending_expires_at < NOW()
+       AND NOT EXISTS (
+         SELECT 1 FROM payment_ledger pl
+         WHERE pl.order_id = rl.pending_order_id AND pl.status = 'pending'
+       )`,
+  );
+}
+
 export async function initiateResellCheckout(
   buyerId: string,
   resellListingId: string,
@@ -311,45 +340,55 @@ export async function initiateResellCheckout(
   if (!profile) throw new Error("Account not found");
 
   const paymentPhone = await resolveCheckoutPhone(buyerId, input);
-  const subtotal = Number(rl.price_mwk);
-  const serviceFee = computePlatformServiceFee(subtotal);
-  const total = subtotal + serviceFee;
+  const salePrice = Number(rl.price_mwk);
+  const serviceFee = computePlatformServiceFee(salePrice);
+  const total = salePrice + serviceFee;
 
   const orderId = uuid();
   const ledgerId = uuid();
   const reference = makeReference(String(rl.listing_id));
   const chargeId = makeChargeId(ledgerId);
-
-  const init = await initiateMobileMoneyCharge({
-    chargeId,
-    amount: total,
-    mobile: paymentPhone,
-    operator: input.paymentMethod as MomoOperator,
-    email: String(profile.email),
-    fullName: String(profile.full_name),
-  });
+  const timeoutSec = env.paychangu.pendingTimeoutSec;
 
   const checkoutMeta = {
     resellListingId,
     userTicketId: rl.user_ticket_id,
     sellerUserId: rl.seller_user_id,
     listingId: rl.listing_id,
-    subtotal,
+    subtotal: salePrice,
     serviceFee,
     total,
     lineCount: 1,
   };
 
-  const timeoutSec = env.paychangu.pendingTimeoutSec;
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+
+    const [lockedRows] = await conn.query<RowDataPacket[]>(
+      `SELECT * FROM resell_listings WHERE id = :id AND status = 'active' FOR UPDATE`,
+      { id: resellListingId },
+    );
+    if (!lockedRows[0]) {
+      throw new Error("Resale listing is no longer available");
+    }
+
+    await conn.query(
+      `UPDATE resell_listings
+       SET status = 'pending_sale',
+           pending_buyer_id = :buyerId,
+           pending_order_id = :orderId,
+           pending_expires_at = DATE_ADD(NOW(), INTERVAL ${timeoutSec} SECOND)
+       WHERE id = :id`,
+      { buyerId, orderId, id: resellListingId },
+    );
+
     await conn.query(
       `INSERT INTO orders (
         id, user_id, listing_id, reference, status, subtotal_mwk, service_fee_mwk, total_mwk,
         payment_method, payment_phone, contact_name, contact_email, contact_phone
       ) VALUES (
-        :orderId, :userId, :listingId, :reference, 'pending', :subtotal, :serviceFee, :total,
+        :orderId, :userId, :listingId, :reference, 'pending', 0, :serviceFee, :total,
         :paymentMethod, :paymentPhone, :contactName, :contactEmail, :contactPhone
       )`,
       {
@@ -357,7 +396,6 @@ export async function initiateResellCheckout(
         userId: buyerId,
         listingId: rl.listing_id,
         reference,
-        subtotal,
         serviceFee,
         total,
         paymentMethod: input.paymentMethod,
@@ -369,30 +407,28 @@ export async function initiateResellCheckout(
     );
     await conn.query(
       `INSERT INTO payment_ledger (
-        id, user_id, order_id, status, paychangu_charge_id, paychangu_trans_id, paychangu_ref_id,
+        id, user_id, order_id, status, paychangu_charge_id,
         amount_mwk, payment_method, payment_phone, account_name, account_email,
         checkout_meta, provider_status, expires_at
       ) VALUES (
-        :ledgerId, :userId, :orderId, 'pending', :chargeId, :transId, :refId,
+        :ledgerId, :userId, :orderId, 'pending', :chargeId,
         :amount, :paymentMethod, :paymentPhone, :accountName, :accountEmail,
-        :checkoutMeta, :providerStatus, DATE_ADD(NOW(), INTERVAL ${timeoutSec} SECOND)
+        :checkoutMeta, 'initiated', DATE_ADD(NOW(), INTERVAL ${timeoutSec} SECOND)
       )`,
       {
         ledgerId,
         userId: buyerId,
         orderId,
-        chargeId: init.chargeId,
-        transId: init.transId,
-        refId: init.refId,
+        chargeId,
         amount: total,
         paymentMethod: input.paymentMethod,
         paymentPhone,
         accountName: profile.full_name,
         accountEmail: profile.email,
         checkoutMeta: JSON.stringify(checkoutMeta),
-        providerStatus: init.providerStatus,
       } satisfies QueryParams,
     );
+
     await conn.commit();
   } catch (err) {
     await conn.rollback();
@@ -400,6 +436,47 @@ export async function initiateResellCheckout(
   } finally {
     conn.release();
   }
+
+  if (!env.paychangu.mock && !env.paychangu.apiKey) {
+    await releaseResellListingHoldForOrder(orderId);
+    throw new Error("PayChangu API key is not configured");
+  }
+
+  let init;
+  try {
+    init = await initiateMobileMoneyCharge({
+      chargeId,
+      amount: total,
+      mobile: paymentPhone,
+      operator: input.paymentMethod as MomoOperator,
+      email: String(profile.email),
+      fullName: String(profile.full_name),
+    });
+  } catch (err) {
+    await pool.query(
+      `UPDATE payment_ledger SET status = 'failed', failure_reason = :reason, provider_status = 'failed'
+       WHERE id = :ledgerId`,
+      {
+        ledgerId,
+        reason: err instanceof Error ? err.message : "Could not start mobile money payment",
+      },
+    );
+    await pool.query(`UPDATE orders SET status = 'failed' WHERE id = :orderId`, { orderId });
+    await releaseResellListingHoldForOrder(orderId);
+    throw err;
+  }
+
+  await pool.query(
+    `UPDATE payment_ledger
+     SET paychangu_trans_id = :transId, paychangu_ref_id = :refId, provider_status = :providerStatus
+     WHERE id = :ledgerId`,
+    {
+      ledgerId,
+      transId: init.transId,
+      refId: init.refId,
+      providerStatus: init.providerStatus,
+    },
+  );
 
   await maybeSavePaymentMethodFromCheckout(buyerId, {
     savePaymentMethod: input.savePaymentMethod,
@@ -452,8 +529,14 @@ export async function fulfillResellSale(
   }
 
   const [rlRows] = await conn.query<RowDataPacket[]>(
-    `SELECT * FROM resell_listings WHERE id = :id AND status = 'active' FOR UPDATE`,
-    { id: resellListingId },
+    `SELECT * FROM resell_listings
+     WHERE id = :id
+       AND (
+         status = 'active'
+         OR (status = 'pending_sale' AND pending_order_id = :orderId)
+       )
+     FOR UPDATE`,
+    { id: resellListingId, orderId: ledger.order_id },
   );
   if (!rlRows[0]) throw new Error("Resale listing no longer active");
 
@@ -491,7 +574,10 @@ export async function fulfillResellSale(
   }
 
   await conn.query(
-    `UPDATE resell_listings SET status = 'sold', sold_at = NOW() WHERE id = :id`,
+    `UPDATE resell_listings
+     SET status = 'sold', sold_at = NOW(),
+         pending_buyer_id = NULL, pending_order_id = NULL, pending_expires_at = NULL
+     WHERE id = :id`,
     { id: resellListingId },
   );
 

@@ -121,6 +121,53 @@ export async function resolveTier(listingId: string, tierId: string) {
   return enrichTier(row);
 }
 
+export async function assertTierFulfillmentCapacity(
+  conn: Awaited<ReturnType<typeof pool.getConnection>>,
+  tierId: string,
+  requestedUnits: number,
+  excludeOrderId: string,
+): Promise<void> {
+  const [rows] = await conn.query<TierRow[]>(
+    `SELECT * FROM listing_ticket_tiers WHERE id = :tierId LIMIT 1 FOR UPDATE`,
+    { tierId },
+  );
+  const row = rows[0];
+  if (!row) throw new Error("Ticket type not found");
+  if (row.capacity == null) return;
+
+  const capacity = Number(row.capacity);
+  const [soldRows] = await conn.query<RowDataPacket[]>(
+    `SELECT COALESCE(SUM(oi.quantity), 0) AS cnt
+     FROM order_items oi
+     JOIN orders o ON o.id = oi.order_id
+     WHERE oi.ticket_tier_id = :tierId AND o.status = 'confirmed'`,
+    { tierId },
+  );
+  const soldCount = Number(soldRows[0]?.cnt ?? 0);
+
+  const [pendingRows] = await conn.query<RowDataPacket[]>(
+    `SELECT COALESCE(SUM(
+       CAST(JSON_UNQUOTE(JSON_EXTRACT(pl.checkout_meta, '$.lineCount')) AS UNSIGNED)
+     ), 0) AS cnt
+     FROM payment_ledger pl
+     JOIN orders o ON o.id = pl.order_id
+     WHERE pl.status = 'pending' AND o.status = 'pending' AND o.id != :excludeOrderId
+       AND JSON_UNQUOTE(JSON_EXTRACT(pl.checkout_meta, '$.tierId')) = :tierId`,
+    { tierId, excludeOrderId },
+  );
+  const pendingCount = Number(pendingRows[0]?.cnt ?? 0);
+  const available = capacity - soldCount - pendingCount;
+
+  if (requestedUnits > available) {
+    if (available <= 0) {
+      throw new Error(`${row.name} tickets are sold out.`);
+    }
+    throw new Error(
+      `Only ${available} ${row.name} ticket${available === 1 ? "" : "s"} remaining.`,
+    );
+  }
+}
+
 export async function assertTierCheckoutCapacity(
   tierId: string,
   requestedUnits: number,

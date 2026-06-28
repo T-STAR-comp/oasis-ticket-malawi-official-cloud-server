@@ -6,6 +6,7 @@ import {
   executeCustomerRefundPayment,
   refundPaymentMethodLabel,
 } from "./refund-payment.service.js";
+import { EXCLUDE_RESALE_ORDERS_SQL } from "../utils/settlement-filters.js";
 
 const PAYMENT_COMPLETED_AT = `COALESCE(pl.completed_at, o.updated_at, o.created_at)`;
 
@@ -94,7 +95,8 @@ async function getSettledActiveEarnings(organizerId: string): Promise<number> {
      JOIN payment_ledger pl ON pl.order_id = o.id AND pl.status = 'completed'
      WHERE l.organizer_id = :organizerId
        AND o.status = 'confirmed'
-       AND l.status != 'cancelled'`,
+       AND l.status != 'cancelled'
+       ${EXCLUDE_RESALE_ORDERS_SQL}`,
     { organizerId },
   );
   return Number(rows[0]?.settledActive ?? 0);
