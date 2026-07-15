@@ -58,7 +58,8 @@ export const env = {
         tnmOperatorRef: process.env.PAYCHANGU_TNM_OPERATOR_REF ?? "27494cb5-ba9e-437f-a114-4e7a7686bcca",
     },
     /** Serve the React build from public/ (same origin as /api). */
-    serveFrontend: process.env.SERVE_FRONTEND === "true" || process.env.NODE_ENV === "production",
+    serveFrontend: false,
+    //serveFrontend: process.env.SERVE_FRONTEND === "true" || process.env.NODE_ENV === "production"
     platformServiceFeePercent: Number(process.env.PLATFORM_SERVICE_FEE_PERCENT ?? 5),
     referrals: {
         payoutFeePercent: Number(process.env.REFERRAL_PAYOUT_FEE_PERCENT ?? 2),
