@@ -30,10 +30,10 @@ export const env = {
     mail: {
         host: process.env.MAIL_HOST ?? "",
         port: Number(process.env.MAIL_PORT ?? 587),
-        secure: process.env.SMTP_SECURE === "true",
+        secure: process.env.SMTP_SECURE === "false",
         user: process.env.MAIL_USERNAME ?? "",
         pass: process.env.MAIL_PASSWORD ?? "",
-        fromAddress: process.env.MAIL_FROM_ADDRESS ?? "hello@emsoasis.online",
+        fromAddress: process.env.MAIL_FROM_ADDRESS ?? "",
         fromName: process.env.MAIL_FROM_NAME ?? "Ticket Malawi",
     },
     admin: {

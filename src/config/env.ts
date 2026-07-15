@@ -31,24 +31,13 @@ export const env = {
   },
   corsOrigins: corsOrigins(),
   mail: {
-    host: "mail.spacemail.com",
-    port: 587,
-    secure: false,
-    user: "no-reply@ticketmalawi.com",
-    pass: "Ticket2026Mail!",
-    fromAddress: "no-reply@ticketmalawi.com",
-    fromName: "Ticket Malawi",
-    /**
-     *   mail: {
-    host: process.env.MAIL_HOST ?? "mail.spacemail.com",
-    port: Number(process.env.MAIL_PORT ?? 465),
-    secure: process.env.SMTP_SECURE === "true",
-    user: process.env.MAIL_USERNAME ?? "no-reply@ticketmalawi.com",
-    pass: process.env.MAIL_PASSWORD ?? "Pdl5c%fm",
-    fromAddress: process.env.MAIL_FROM_ADDRESS ?? "no-reply@ticketmalawi.com",
+    host: process.env.MAIL_HOST ?? "",
+    port: Number(process.env.MAIL_PORT ?? 587),
+    secure: process.env.SMTP_SECURE === "false",
+    user: process.env.MAIL_USERNAME ?? "",
+    pass: process.env.MAIL_PASSWORD ?? "",
+    fromAddress: process.env.MAIL_FROM_ADDRESS ?? "",
     fromName: process.env.MAIL_FROM_NAME ?? "Ticket Malawi",
-  }
-     */
   },
   admin: {
     username: process.env.ADMIN_USERNAME ?? "admin",
