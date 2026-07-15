@@ -15,6 +15,14 @@ function logSmtpUnavailable(reason: string) {
 }
 
 function getTransporter() {
+  console.log({
+    host: env.mail.host,
+    port: env.mail.port,
+    secure: env.mail.secure,
+    user: env.mail.user,
+    passwordLength: env.mail.pass.length,
+  });
+  
   if (smtpUnavailable) return null;
   if (!env.mail.host || !env.mail.user) {
     console.warn("[email] SMTP not configured — emails will be logged to console only.");
