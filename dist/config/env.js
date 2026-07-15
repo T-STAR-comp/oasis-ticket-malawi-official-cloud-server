@@ -29,8 +29,8 @@ export const env = {
     corsOrigins: corsOrigins(),
     mail: {
         host: process.env.MAIL_HOST ?? "",
-        port: Number(process.env.MAIL_PORT ?? 587),
-        secure: process.env.SMTP_SECURE === "false",
+        port: Number(process.env.MAIL_PORT ?? 465),
+        secure: process.env.SMTP_SECURE === "true",
         user: process.env.MAIL_USERNAME ?? "",
         pass: process.env.MAIL_PASSWORD ?? "",
         fromAddress: process.env.MAIL_FROM_ADDRESS ?? "",
