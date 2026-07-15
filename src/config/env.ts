@@ -32,8 +32,8 @@ export const env = {
   corsOrigins: corsOrigins(),
   mail: {
     host: "mail.spacemail.com",
-    port: 465,
-    secure: true,
+    port: 587,
+    secure: false,
     user: "no-reply@ticketmalawi.com",
     pass: "Ticket2026Mail!",
     fromAddress: "no-reply@ticketmalawi.com",
