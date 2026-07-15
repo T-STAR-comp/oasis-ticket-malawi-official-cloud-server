@@ -152,7 +152,7 @@ export function createApp() {
   app.use("/api/self-checkin", selfCheckinRouter);
 
   registerAdminFrontend(app, env.serveFrontend);
-  //registerFrontend(app, env.serveFrontend);
+  registerFrontend(app, env.serveFrontend);
 
   app.use(errorHandler);
 
