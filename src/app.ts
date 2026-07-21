@@ -139,7 +139,7 @@ export function createApp() {
   app.use("/api/listings", listingsRouter);
   app.use("/api/events", eventsRouter);
   app.use("/api/travel", travelRouter);
-  app.use("/api/checkout", checkoutRouter);
+  //app.use("/api/checkout", checkoutRouter);
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/organizer", organizerRouter);
   app.use("/api/verify", verifyRouter);
@@ -153,7 +153,7 @@ export function createApp() {
 
   registerAdminFrontend(app, env.serveFrontend);
   registerFrontend(app, env.serveFrontend);
-
+  //updated
   app.use(errorHandler);
 
   return app;
