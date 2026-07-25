@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { Response } from "express";
 
 function noStoreJson(res: Response) {
@@ -26,5 +27,12 @@ export function slugify(text: string): string {
 export function makeReference(listingId: string): string {
   const suffix = listingId.slice(0, 2).toUpperCase();
   const num = Math.floor(1000 + Math.random() * 9000);
+  return `TM-${num}-${suffix}`;
+}
+
+/** Unique per ticket (not shared with order reference or sibling tickets). */
+export function makeTicketReference(listingId: string): string {
+  const suffix = listingId.slice(0, 2).toUpperCase();
+  const num = crypto.randomInt(100000, 999999);
   return `TM-${num}-${suffix}`;
 }

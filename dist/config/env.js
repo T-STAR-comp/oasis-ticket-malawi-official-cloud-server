@@ -30,7 +30,7 @@ export const env = {
     mail: {
         host: process.env.MAIL_HOST ?? "",
         port: Number(process.env.MAIL_PORT ?? 465),
-        secure: process.env.SMTP_SECURE === "true",
+        secure: process.env.SMTP_SECURE !== "false",
         user: process.env.MAIL_USERNAME ?? "",
         pass: process.env.MAIL_PASSWORD ?? "",
         fromAddress: process.env.MAIL_FROM_ADDRESS ?? "",
@@ -54,6 +54,8 @@ export const env = {
         pendingTimeoutSec: Math.max(60, Math.floor(Number(process.env.PAYMENT_PENDING_TIMEOUT_MS ?? 300_000) / 1000)),
         /** Do not mark failed while user is entering PIN on their phone */
         verifyGraceMs: Number(process.env.PAYMENT_VERIFY_GRACE_MS ?? 90_000),
+        /** Fallback scan for successful payments missing tickets */
+        reconciliationIntervalMs: Number(process.env.PAYMENT_RECONCILIATION_INTERVAL_MS ?? 600_000),
         airtelOperatorRef: process.env.PAYCHANGU_AIRTEL_OPERATOR_REF ?? "20be6c20-adeb-4b5b-a7ba-0769820df4fb",
         tnmOperatorRef: process.env.PAYCHANGU_TNM_OPERATOR_REF ?? "27494cb5-ba9e-437f-a114-4e7a7686bcca",
     },

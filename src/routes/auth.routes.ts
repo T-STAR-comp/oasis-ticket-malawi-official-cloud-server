@@ -3,6 +3,7 @@ import { z } from "zod";
 import * as authService from "../services/auth.service.js";
 import * as firebaseAuthService from "../services/firebase-auth.service.js";
 import { signToken, requireAuth, type AuthedRequest } from "../middleware/auth.js";
+import { requireFeature } from "../middleware/features.js";
 import { fail, ok } from "../utils/http.js";
 
 const signUpSchema = z.object({
@@ -22,7 +23,7 @@ const signInSchema = z.object({
 
 export const authRouter = Router();
 
-authRouter.post("/signup", async (req, res, next) => {
+authRouter.post("/signup", requireFeature("signup"), async (req, res, next) => {
   try {
     const body = signUpSchema.parse(req.body);
     const result = await authService.signUp(body);
@@ -62,7 +63,7 @@ authRouter.post("/resend-verification", async (req, res, next) => {
   }
 });
 
-authRouter.post("/signin", async (req, res, next) => {
+authRouter.post("/signin", requireFeature("signin"), async (req, res, next) => {
   try {
     const body = signInSchema.parse(req.body);
     const result = await authService.initiateSignIn(body.email, body.password);
@@ -85,7 +86,7 @@ authRouter.post("/signin", async (req, res, next) => {
   }
 });
 
-authRouter.post("/signin/verify", async (req, res, next) => {
+authRouter.post("/signin/verify", requireFeature("signin"), async (req, res, next) => {
   try {
     const { email, code } = z
       .object({ email: z.string().email(), code: z.string().length(6) })

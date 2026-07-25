@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 function noStoreJson(res) {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     res.setHeader("Pragma", "no-cache");
@@ -20,5 +21,11 @@ export function slugify(text) {
 export function makeReference(listingId) {
     const suffix = listingId.slice(0, 2).toUpperCase();
     const num = Math.floor(1000 + Math.random() * 9000);
+    return `TM-${num}-${suffix}`;
+}
+/** Unique per ticket (not shared with order reference or sibling tickets). */
+export function makeTicketReference(listingId) {
+    const suffix = listingId.slice(0, 2).toUpperCase();
+    const num = crypto.randomInt(100000, 999999);
     return `TM-${num}-${suffix}`;
 }

@@ -11,6 +11,7 @@ import { formatSqlDate, parseEventDateInput } from "../utils/dates.js";
 import { assertListingLocation } from "../utils/malawi-locations.js";
 import { assertVirtualMeetingUrl, isVirtualEventPubliclyVisible, assertVirtualEventPurchasable, } from "../utils/virtual-events.js";
 import * as ticketTiersService from "./ticket-tiers.service.js";
+import { enrichEventLayoutAvailability, getOccupiedEventSpotNumbers, } from "./event-layout.service.js";
 function isListingRowPubliclyVisible(row, now = new Date()) {
     if ((row.event_format ?? "physical") !== "virtual")
         return true;
@@ -150,6 +151,23 @@ async function mapListing(row, seats, opts) {
         route: row.kind === "travel" && row.route_from
             ? { from: row.route_from, to: row.route_to, duration: row.route_duration }
             : undefined,
+        ...(row.kind === "event"
+            ? {
+                eventLayout: await (async () => {
+                    const raw = row.event_layout_json;
+                    if (!raw)
+                        return undefined;
+                    try {
+                        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+                        const taken = await getOccupiedEventSpotNumbers(row.id);
+                        return enrichEventLayoutAvailability(parsed, taken);
+                    }
+                    catch {
+                        return undefined;
+                    }
+                })(),
+            }
+            : {}),
     };
     if (row.kind === "travel" && seats && seats.length > 0) {
         const meta = seats[0];
@@ -409,13 +427,15 @@ export async function upsertListing(organizerId, body) {
     const routeFrom = body.route?.from ?? null;
     const routeTo = body.route?.to ?? null;
     assertListingLocation(kind, status, location, routeFrom, routeTo, eventFormat);
+    const eventLayoutRaw = body.eventLayout;
+    const eventLayoutJson = kind === "event" && eventLayoutRaw?.enabled ? JSON.stringify(eventLayoutRaw) : null;
     await pool.query(`INSERT INTO listings (
-      id, organizer_id, kind, event_format, virtual_event_type, virtual_buy_mode, virtual_pricing_mode, title, subtitle, category, date_label, event_starts_on, ticket_capacity,
+      id, organizer_id, kind, event_format, virtual_event_type, virtual_buy_mode, virtual_pricing_mode, title, subtitle, category, date_label, event_starts_on, ticket_capacity, event_layout_json,
       time_label, location, virtual_meeting_url, virtual_duration_minutes,
       price_mwk, image_url, description, operator_name, operator_tagline, operator_detail,
       route_from, route_to, route_duration, status
     ) VALUES (
-      :id, :organizerId, :kind, :eventFormat, :virtualEventType, :virtualBuyMode, :virtualPricingMode, :title, :subtitle, :category, :dateLabel, :eventStartsOn, :ticketCapacity,
+      :id, :organizerId, :kind, :eventFormat, :virtualEventType, :virtualBuyMode, :virtualPricingMode, :title, :subtitle, :category, :dateLabel, :eventStartsOn, :ticketCapacity, :eventLayoutJson,
       :timeLabel, :location, :virtualMeetingUrl, :virtualDurationMinutes,
       :priceMwk, :imageUrl, :description, :operatorName, :operatorTagline, :operatorDetail,
       :routeFrom, :routeTo, :routeDuration, :status
@@ -428,6 +448,7 @@ export async function upsertListing(organizerId, body) {
       title = VALUES(title), subtitle = VALUES(subtitle), category = VALUES(category),
       date_label = VALUES(date_label), event_starts_on = VALUES(event_starts_on),
       ticket_capacity = VALUES(ticket_capacity),
+      event_layout_json = VALUES(event_layout_json),
       time_label = VALUES(time_label), location = VALUES(location),
       virtual_meeting_url = VALUES(virtual_meeting_url),
       virtual_duration_minutes = VALUES(virtual_duration_minutes),
@@ -448,6 +469,7 @@ export async function upsertListing(organizerId, body) {
         dateLabel,
         eventStartsOn,
         ticketCapacity: parsedCapacity,
+        eventLayoutJson,
         timeLabel: String(body.time ?? body.timeLabel ?? ""),
         location,
         virtualMeetingUrl,

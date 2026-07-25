@@ -1,16 +1,17 @@
 import { v4 as uuid } from "uuid";
 import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
-import { getLedgerByOrderId, getUserPendingLedger, listExpiredPendingLedgers, parseCheckoutMeta, } from "./ledger.service.js";
+import { getGuestPendingLedger, getLedgerByOrderId, getUserPendingLedger, listExpiredPendingLedgers, parseCheckoutMeta, } from "./ledger.service.js";
 import { assertCheckoutCapacity, assertFulfillmentCapacity, isPurchasableStatus, syncListingSoldOutStatus, } from "./capacity.service.js";
 import { failCheckoutWithRecovery } from "./payment-failure-refund.service.js";
 import { distributeTicketAmountPaid } from "../utils/ticket-amount-paid.js";
 import { assertListingEventDateActive, getListingById } from "./listings.service.js";
+import { assertEventSpotsAvailable, listingUsesEventSeating, parseEventLayoutJson, } from "./event-layout.service.js";
 import * as ticketTiersService from "./ticket-tiers.service.js";
 import { syncOrganizerRefundRecovery } from "./refund-recovery.service.js";
 import { assertQueueCheckoutAllowed, completeQueueEntry, } from "./queue.service.js";
 import { initiateMobileMoneyCharge, TERMINAL_PAYMENT_STATUSES, verifyMobileMoneyCharge, } from "./paychangu.service.js";
-import { makeReference } from "../utils/http.js";
+import { makeReference, makeTicketReference } from "../utils/http.js";
 import { computeReferralPricing, recordReferralEarning, resolveActiveReferral, } from "./referral.service.js";
 import { getProfile } from "./auth.service.js";
 import { getPaymentMethodForUser, maybeSavePaymentMethodFromCheckout } from "./payment-methods.service.js";
@@ -18,6 +19,27 @@ import { normalizeMalawiPhone } from "../utils/phone.js";
 import { fulfillResellSale, expireStaleResellListingHolds } from "./resell.service.js";
 import { computePlatformServiceFeeWithPercent, applyServiceFeeBearer, resolveCheckoutServiceFee, } from "../utils/platform-fee.js";
 import { enrollUserTicketVirtualSessions, resolveVirtualCheckoutPricing, } from "./virtual-session-checkout.service.js";
+import { features } from "../config/features.js";
+import { emailTicketsForOrder } from "./guest-tickets.service.js";
+import { makeGuestAccessToken } from "./ticket-pdf.service.js";
+import { log } from "../utils/logger.js";
+function eventSeatingEnabled(listing) {
+    return (listing.kind === "event" &&
+        listingUsesEventSeating(parseEventLayoutJson(listing.eventLayout)));
+}
+function resolveSeatBasedLineCount(listing, qty, seatNumbers) {
+    const usesSeats = (listing.kind === "travel" || eventSeatingEnabled(listing)) && (seatNumbers?.length ?? 0) > 0;
+    return usesSeats ? seatNumbers.length : qty;
+}
+function applyEventVirtualLineCount(listing, seatNumbers, virtualLineCount, fallbackLineCount) {
+    if (eventSeatingEnabled(listing) && (seatNumbers?.length ?? 0) > 0) {
+        return seatNumbers.length;
+    }
+    if (listing.kind === "event") {
+        return virtualLineCount;
+    }
+    return fallbackLineCount;
+}
 function platformServiceFeeForSubtotal(subtotalMwk, percent) {
     return computePlatformServiceFeeWithPercent(subtotalMwk, percent);
 }
@@ -61,6 +83,25 @@ async function resolveCheckoutIdentity(userId, input) {
         contactPhone: profilePhone || paymentPhone,
         paymentPhone,
         nationalId: String(profile.national_id ?? "").trim() || undefined,
+    };
+}
+function resolveGuestCheckoutIdentity(input) {
+    const contactName = String(input.contactName ?? "").trim();
+    const contactEmail = String(input.contactEmail ?? "").trim().toLowerCase();
+    const paymentPhone = normalizeMalawiPhone(input.paymentPhone ?? "") ?? undefined;
+    if (!contactName)
+        throw new Error("Your name is required for guest checkout.");
+    if (!contactEmail || !contactEmail.includes("@")) {
+        throw new Error("A valid email is required — your tickets will be sent there.");
+    }
+    if (!paymentPhone)
+        throw new Error("Mobile money number is required");
+    return {
+        contactName,
+        contactEmail,
+        contactPhone: String(input.contactPhone ?? "").trim() || paymentPhone,
+        paymentPhone,
+        nationalId: String(input.nationalId ?? "").trim() || undefined,
     };
 }
 async function pricingForCheckout(lineCount, unitPrice, listingId, organizerId, referralCode) {
@@ -127,10 +168,19 @@ export async function failStalePendingPayments() {
     }
 }
 async function resumePendingCheckout(userId, ledger, listingTitle) {
-    const [orderRows] = await pool.query(`SELECT id, reference, total_mwk, payment_method FROM orders WHERE id = :orderId AND user_id = :userId`, { orderId: ledger.order_id, userId });
+    const [orderRows] = await pool.query(userId
+        ? `SELECT id, reference, total_mwk, payment_method, guest_access_token, is_guest, contact_email
+         FROM orders WHERE id = :orderId AND user_id = :userId`
+        : `SELECT id, reference, total_mwk, payment_method, guest_access_token, is_guest, contact_email
+         FROM orders WHERE id = :orderId AND is_guest = 1`, userId ? { orderId: ledger.order_id, userId } : { orderId: ledger.order_id });
     const order = orderRows[0];
     if (!order)
         throw new Error("Pending order not found");
+    log.info("checkout", "Resuming pending checkout", {
+        orderId: order.id,
+        ledgerId: ledger.id,
+        isGuest: !userId,
+    });
     return {
         orderId: order.id,
         ledgerId: ledger.id,
@@ -140,6 +190,9 @@ async function resumePendingCheckout(userId, ledger, listingTitle) {
         paymentStatus: "pending",
         paychanguChargeId: ledger.paychangu_charge_id,
         mockPayment: env.paychangu.mock,
+        guestAccessToken: order.guest_access_token ?? undefined,
+        isGuest: Boolean(order.is_guest),
+        buyerEmail: order.contact_email ?? undefined,
         resumed: true,
         message: order.payment_method === "airtel"
             ? "Resuming your in-progress Airtel Money payment. Check your phone if you still have a PIN prompt."
@@ -150,9 +203,7 @@ export async function previewListingCheckoutPricing(listingId, input) {
     const listing = await getListingById(listingId, true);
     if (!listing)
         throw new Error("Listing not found");
-    const lineCountBase = listing.kind === "travel" && input.seatNumbers?.length
-        ? input.seatNumbers.length
-        : input.qty;
+    const lineCountBase = resolveSeatBasedLineCount(listing, input.qty, input.seatNumbers);
     let lineCount = lineCountBase;
     let unitPrice = Number(listing.price);
     if (listing.kind === "event") {
@@ -170,7 +221,7 @@ export async function previewListingCheckoutPricing(listingId, input) {
             tierId: input.tierId,
             virtualSessionIds: input.virtualSessionIds,
         });
-        lineCount = virtualPlan.lineCount;
+        lineCount = applyEventVirtualLineCount(listing, input.seatNumbers, virtualPlan.lineCount, lineCountBase);
         unitPrice = virtualPlan.unitPrice;
         const tiers = listing.ticketTiers ?? [];
         if (tiers.length > 0) {
@@ -210,9 +261,7 @@ export async function initiateCheckout(userId, listingId, input) {
     if (!isPurchasableStatus(String(listing.eventStatus ?? "draft"))) {
         throw new Error("This listing is not available for purchase.");
     }
-    const lineCountBase = listing.kind === "travel" && input.seatNumbers?.length
-        ? input.seatNumbers.length
-        : input.qty;
+    const lineCountBase = resolveSeatBasedLineCount(listing, input.qty, input.seatNumbers);
     let lineCount = lineCountBase;
     let unitPrice = Number(listing.price);
     let selectedTier = null;
@@ -234,7 +283,7 @@ export async function initiateCheckout(userId, listingId, input) {
             tierId: input.tierId,
             virtualSessionIds: input.virtualSessionIds,
         });
-        lineCount = virtualPlan.lineCount;
+        lineCount = applyEventVirtualLineCount(listing, input.seatNumbers, virtualPlan.lineCount, lineCountBase);
         unitPrice = virtualPlan.unitPrice;
         virtualSessionIds = virtualPlan.selectedSessionIds;
         enrollAllVirtualSessions = virtualPlan.enrollAllSessions;
@@ -256,8 +305,11 @@ export async function initiateCheckout(userId, listingId, input) {
             }
         }
     }
+    if (eventSeatingEnabled(listing) && !input.seatNumbers?.length) {
+        throw new Error("Select at least one seat or spot to continue.");
+    }
     await assertCheckoutCapacity(listingId, listing.kind, listing.ticketCapacity ?? null, lineCount);
-    await assertQueueCheckoutAllowed(listingId, userId, input.queueId, listing.kind, listing.ticketCapacity ?? null);
+    await assertQueueCheckoutAllowed(listingId, { userId }, input.queueId, listing.kind, listing.ticketCapacity ?? null);
     const lockKey = `checkout:${userId}`;
     const conn = await pool.getConnection();
     try {
@@ -278,7 +330,98 @@ export async function initiateCheckout(userId, listingId, input) {
         conn.release();
     }
 }
-async function createCheckoutWithPayChangu(userId, listingId, listing, input, conn, unitPrice, selectedTier, lineCount, virtualSessionIds, enrollAllVirtualSessions) {
+export async function initiateGuestCheckout(listingId, input, guestKey) {
+    if (!features.guestCheckout) {
+        throw new Error("Guest checkout is not available right now.");
+    }
+    await failStalePendingPayments();
+    if (input.paymentMethod === "card") {
+        throw new Error("Card payments via PayChangu are not enabled yet. Use Airtel or TNM.");
+    }
+    if (input.paymentMethodId || input.savePaymentMethod) {
+        throw new Error("Saved payment methods require an account. Sign in or use guest checkout.");
+    }
+    const identity = resolveGuestCheckoutIdentity(input);
+    const checkoutInput = { ...input, ...identity };
+    const listing = await getListingById(listingId, true);
+    if (!listing)
+        throw new Error("Listing not found");
+    if (!isPurchasableStatus(String(listing.eventStatus ?? "draft"))) {
+        throw new Error("This listing is not available for purchase.");
+    }
+    const lineCountBase = resolveSeatBasedLineCount(listing, input.qty, input.seatNumbers);
+    let lineCount = lineCountBase;
+    let unitPrice = Number(listing.price);
+    let selectedTier = null;
+    let virtualSessionIds = [];
+    let enrollAllVirtualSessions = false;
+    if (listing.kind === "event") {
+        await assertListingEventDateActive(listingId);
+        const virtualPlan = await resolveVirtualCheckoutPricing({
+            id: listingId,
+            kind: listing.kind,
+            eventFormat: String(listing.eventFormat ?? "physical"),
+            virtualEventType: String(listing.virtualEventType ?? "one_time"),
+            virtualBuyMode: listing.virtualBuyMode,
+            virtualPricingMode: listing.virtualPricingMode,
+            price: Number(listing.price),
+            ticketTiers: listing.ticketTiers,
+        }, {
+            qty: input.qty,
+            tierId: input.tierId,
+            virtualSessionIds: input.virtualSessionIds,
+        });
+        lineCount = applyEventVirtualLineCount(listing, input.seatNumbers, virtualPlan.lineCount, lineCountBase);
+        unitPrice = virtualPlan.unitPrice;
+        virtualSessionIds = virtualPlan.selectedSessionIds;
+        enrollAllVirtualSessions = virtualPlan.enrollAllSessions;
+        const tiers = listing.ticketTiers ?? [];
+        if (tiers.length > 0) {
+            let tierId = input.tierId?.trim() || undefined;
+            if (!tierId && tiers.length === 1)
+                tierId = tiers[0]?.id;
+            if (!tierId)
+                throw new Error("Select a ticket type (Standard, VIP, etc.) to continue.");
+            selectedTier = await ticketTiersService.resolveTier(listingId, tierId);
+            if (!selectedTier)
+                throw new Error("Ticket type not found");
+            await ticketTiersService.assertTierCheckoutCapacity(selectedTier.id, lineCount);
+            if (!virtualPlan.virtualSessionSelection)
+                unitPrice = selectedTier.priceMwk;
+        }
+    }
+    if (eventSeatingEnabled(listing) && !input.seatNumbers?.length) {
+        throw new Error("Select at least one seat or spot to continue.");
+    }
+    await assertCheckoutCapacity(listingId, listing.kind, listing.ticketCapacity ?? null, lineCount);
+    await assertQueueCheckoutAllowed(listingId, { guestKey }, input.queueId, listing.kind, listing.ticketCapacity ?? null);
+    const lockKey = `checkout:guest:${guestKey.slice(0, 32)}`;
+    const conn = await pool.getConnection();
+    try {
+        const [lockRows] = await conn.query(`SELECT GET_LOCK(:lockKey, 15) AS ok`, {
+            lockKey,
+        });
+        if (Number(lockRows[0]?.ok) !== 1) {
+            throw new Error("Another checkout is in progress. Please wait a moment and try again.");
+        }
+        const guestAccessToken = makeGuestAccessToken();
+        const existingPending = await getGuestPendingLedger(guestKey);
+        if (existingPending) {
+            return resumePendingCheckout(null, existingPending, listing.title);
+        }
+        log.info("checkout", "Guest checkout initiated", {
+            listingId,
+            guestKey: guestKey.slice(0, 32),
+            email: checkoutInput.contactEmail,
+        });
+        return await createCheckoutWithPayChangu(null, listingId, listing, checkoutInput, conn, unitPrice, selectedTier, lineCount, virtualSessionIds, enrollAllVirtualSessions, { isGuest: true, guestAccessToken, guestKey: guestKey.slice(0, 64) });
+    }
+    finally {
+        await conn.query(`SELECT RELEASE_LOCK(:lockKey)`, { lockKey });
+        conn.release();
+    }
+}
+async function createCheckoutWithPayChangu(userId, listingId, listing, input, conn, unitPrice, selectedTier, lineCount, virtualSessionIds, enrollAllVirtualSessions, guestOptions) {
     const pricing = await pricingForCheckout(lineCount, unitPrice, listingId, listing.organizerId, input.referralCode);
     const { subtotal, serviceFee, total, serviceFeePercent, serviceFeeBearer, } = pricing;
     const orderId = uuid();
@@ -314,6 +457,8 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
         serviceFeeBearer: pricing.serviceFeeBearer,
         serviceFeeSource: pricing.serviceFeeSource,
         enrollAllVirtualSessions,
+        isGuest: Boolean(guestOptions?.isGuest),
+        guestKey: guestOptions?.guestKey ?? null,
     };
     if (listing.kind === "travel" && input.seatNumbers?.length) {
         for (const num of input.seatNumbers) {
@@ -325,6 +470,12 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
                 throw new Error(`Seat ${num} is not available`);
             }
         }
+    }
+    if (eventSeatingEnabled(listing) && input.seatNumbers?.length) {
+        await assertEventSpotsAvailable(listingId, input.seatNumbers);
+    }
+    if (eventSeatingEnabled(listing) && !input.seatNumbers?.length) {
+        throw new Error("Select at least one seat or spot to continue.");
     }
     const timeoutSec = env.paychangu.pendingTimeoutSec;
     try {
@@ -340,16 +491,21 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
                 }
             }
         }
+        if (eventSeatingEnabled(listing) && input.seatNumbers?.length) {
+            await assertEventSpotsAvailable(listingId, input.seatNumbers, { conn });
+        }
         await conn.query(`INSERT INTO orders (
         id, user_id, listing_id, reference, status, subtotal_mwk, service_fee_mwk, service_fee_bearer,
         service_fee_percent_applied, total_mwk,
         payment_method, payment_phone, contact_name, contact_email, contact_phone, national_id,
-        referral_id, referral_code, catalog_subtotal_mwk, referral_discount_mwk, referrer_commission_mwk
+        referral_id, referral_code, catalog_subtotal_mwk, referral_discount_mwk, referrer_commission_mwk,
+        is_guest, guest_access_token
       ) VALUES (
         :orderId, :userId, :listingId, :reference, 'pending', :subtotal, :serviceFee, :serviceFeeBearer,
         :serviceFeePercent, :total,
         :paymentMethod, :paymentPhone, :contactName, :contactEmail, :contactPhone, :nationalId,
-        :referralId, :referralCode, :catalogSubtotal, :referralDiscount, :referrerCommission
+        :referralId, :referralCode, :catalogSubtotal, :referralDiscount, :referrerCommission,
+        :isGuest, :guestAccessToken
       )`, {
             orderId,
             userId,
@@ -371,6 +527,8 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
             catalogSubtotal: pricing.catalogSubtotal,
             referralDiscount: pricing.referral?.buyerDiscount ?? 0,
             referrerCommission: pricing.referral?.referrerCommission ?? 0,
+            isGuest: guestOptions?.isGuest ? 1 : 0,
+            guestAccessToken: guestOptions?.guestAccessToken ?? null,
         });
         await conn.query(`INSERT INTO payment_ledger (
         id, user_id, order_id, status, paychangu_charge_id,
@@ -394,9 +552,23 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
             checkoutMeta: JSON.stringify(checkoutMeta),
         });
         await conn.commit();
+        log.info("checkout", "Order and payment ledger created", {
+            orderId,
+            ledgerId,
+            reference,
+            total,
+            isGuest: Boolean(guestOptions?.isGuest),
+            userId: userId ?? "guest",
+            email: input.contactEmail,
+        });
     }
     catch (err) {
         await conn.rollback();
+        log.error("checkout", "Failed to create order/ledger transaction", err, {
+            orderId,
+            ledgerId,
+            isGuest: Boolean(guestOptions?.isGuest),
+        });
         throw err;
     }
     let init;
@@ -429,8 +601,8 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
         refId: init.refId,
         providerStatus: init.providerStatus,
     });
-    await maybeSavePaymentMethodFromCheckout(userId, {
-        savePaymentMethod: input.savePaymentMethod,
+    await maybeSavePaymentMethodFromCheckout(userId ?? "", {
+        savePaymentMethod: userId ? input.savePaymentMethod : false,
         paymentMethodId: input.paymentMethodId,
         paymentMethod: input.paymentMethod,
         paymentPhone: input.paymentPhone,
@@ -444,23 +616,33 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
         paymentStatus: "pending",
         paychanguChargeId: init.chargeId,
         mockPayment: env.paychangu.mock,
+        guestAccessToken: guestOptions?.guestAccessToken,
+        isGuest: Boolean(guestOptions?.isGuest),
+        buyerEmail: input.contactEmail,
         message: input.paymentMethod === "airtel"
             ? "Check your phone for the Airtel Money PIN prompt."
             : "Check your phone for the TNM Mpamba PIN prompt.",
     };
 }
-export async function getOrderPaymentStatus(userId, orderId) {
-    const [orderRows] = await pool.query(`SELECT * FROM orders WHERE id = :orderId AND user_id = :userId`, { orderId, userId });
-    const order = orderRows[0];
+export async function getOrderPaymentStatus(orderId, identity) {
+    let order;
+    if ("userId" in identity) {
+        const [orderRows] = await pool.query(`SELECT * FROM orders WHERE id = :orderId AND user_id = :userId`, { orderId, userId: identity.userId });
+        order = orderRows[0];
+    }
+    else {
+        const [orderRows] = await pool.query(`SELECT * FROM orders WHERE id = :orderId AND guest_access_token = :token AND is_guest = 1`, { orderId, token: identity.guestAccessToken });
+        order = orderRows[0];
+    }
     if (!order)
         throw new Error("Order not found");
-    const ledger = await getLedgerByOrderId(orderId, userId);
+    const ledger = await getLedgerByOrderId(orderId, "userId" in identity ? identity.userId : undefined);
     if (!ledger)
         throw new Error("Payment record not found");
     if (ledger.status === "pending") {
         await processPendingLedgerEntry(ledger.id);
     }
-    const refreshedLedger = (await getLedgerByOrderId(orderId, userId));
+    const refreshedLedger = (await getLedgerByOrderId(orderId, "userId" in identity ? identity.userId : undefined));
     const [refreshedOrderRows] = await pool.query(`SELECT status, reference, total_mwk FROM orders WHERE id = :orderId`, { orderId });
     const refreshedOrder = refreshedOrderRows[0];
     let tickets = [];
@@ -472,13 +654,13 @@ export async function getOrderPaymentStatus(userId, orderId) {
             qrToken: t.qr_token,
             seat: t.seat_number ? String(t.seat_number) : undefined,
         }));
-        if (tickets.length === 0) {
+        if (tickets.length === 0 && "userId" in identity) {
             const meta = parseCheckoutMeta(refreshedLedger);
             const resaleTicketId = meta.userTicketId;
             if (resaleTicketId) {
                 const [resaleRows] = await pool.query(`SELECT id, reference, qr_token, seat_number
            FROM user_tickets
-           WHERE id = :ticketId AND user_id = :userId`, { ticketId: resaleTicketId, userId });
+           WHERE id = :ticketId AND user_id = :userId`, { ticketId: resaleTicketId, userId: identity.userId });
                 tickets = resaleRows.map((t) => ({
                     id: t.id,
                     reference: t.reference,
@@ -502,6 +684,8 @@ export async function getOrderPaymentStatus(userId, orderId) {
         paychanguChargeId: refreshedLedger.paychangu_charge_id,
         expiresAt: refreshedLedger.expires_at,
         failureReason: refreshedLedger.failure_reason,
+        buyerEmail: order.contact_email,
+        isGuest: Boolean(order.is_guest),
         tickets,
     };
 }
@@ -524,11 +708,22 @@ export async function processPendingLedgerEntry(ledgerId) {
     await pool.query(`UPDATE payment_ledger SET provider_status = :providerStatus WHERE id = :ledgerId`, { ledgerId, providerStatus: verify.providerStatus });
     const terminalFailure = TERMINAL_PAYMENT_STATUSES.has(verify.providerStatus);
     if (verify.success) {
+        if (!features.ticketGeneration) {
+            log.warn("payment", "PayChangu success but ticket generation is disabled", { ledgerId });
+            return;
+        }
         try {
             await fulfillCheckout(row);
+            log.info("payment", "Checkout fulfilled after PayChangu success", {
+                ledgerId,
+                orderId: row.order_id,
+            });
         }
         catch (err) {
-            console.error("[payment] fulfill failed after PayChangu success:", err);
+            log.error("payment", "Fulfill failed after PayChangu success", err, {
+                ledgerId,
+                orderId: row.order_id,
+            });
             await failCheckoutWithRecovery(row, err instanceof Error ? err.message : "Could not finalize tickets after payment", { paymentSucceeded: true });
         }
         return;
@@ -538,36 +733,127 @@ export async function processPendingLedgerEntry(ledgerId) {
         return;
     }
     if (verify.failed && inGrace) {
-        console.log(`[payment] ignoring ambiguous early verify (grace ${env.paychangu.verifyGraceMs}ms)`, ledgerId, verify.providerStatus, verify.message);
+        log.debug("payment", "Ignoring ambiguous early verify during grace period", {
+            ledgerId,
+            providerStatus: verify.providerStatus,
+            message: verify.message,
+            graceMs: env.paychangu.verifyGraceMs,
+        });
     }
 }
-async function fulfillCheckout(ledger) {
+/** Post-commit hooks: organizer settlement, sold-out sync, referrals, queue, ticket email. */
+export async function runPostCheckoutSideEffects(ledger, listing, listingId, options) {
+    const metaAfter = parseCheckoutMeta(ledger);
+    await completeQueueEntry(metaAfter.queueId);
+    await syncListingSoldOutStatus(listingId, listing.kind, listing.ticketCapacity ?? null);
+    void syncOrganizerRefundRecovery(listing.organizerId).catch((err) => {
+        log.error("refund-recovery", "Post-checkout sync failed", err, { orderId: ledger.order_id });
+    });
+    const metaReferral = parseCheckoutMeta(ledger);
+    const referralId = metaReferral.referralId;
+    const referrerUserId = metaReferral.referrerUserId;
+    const referrerCommission = Number(metaReferral.referrerCommission ?? 0);
+    if (referralId && referrerUserId && referrerCommission > 0) {
+        const [existing] = await pool.query(`SELECT 1 FROM referral_earnings WHERE order_id = :orderId LIMIT 1`, { orderId: ledger.order_id });
+        if (!existing[0]) {
+            void recordReferralEarning({
+                referralId,
+                orderId: ledger.order_id,
+                referrerUserId,
+                listingId,
+                commissionMwk: referrerCommission,
+                buyerDiscountMwk: Number(metaReferral.referralDiscount ?? 0),
+                catalogSubtotalMwk: Number(metaReferral.catalogSubtotal ?? metaReferral.subtotal ?? 0),
+            }).catch((err) => log.error("referral", "Earning record failed", err, { orderId: ledger.order_id }));
+        }
+    }
+    try {
+        const emailResult = await emailTicketsForOrder(ledger.order_id, {
+            delayedApology: options?.delayedTicketEmail,
+        });
+        if (emailResult.sent) {
+            log.info("email", "Ticket purchase email sent", {
+                orderId: ledger.order_id,
+                delayedApology: Boolean(options?.delayedTicketEmail),
+            });
+        }
+        else {
+            log.warn("email", "Ticket purchase email not sent", {
+                orderId: ledger.order_id,
+                reason: emailResult.reason ?? "unknown",
+            });
+        }
+    }
+    catch (err) {
+        log.error("email", "Ticket delivery failed", err, { orderId: ledger.order_id });
+    }
+}
+export async function fulfillCheckout(ledger, options) {
+    if (!features.ticketGeneration && !options?.bypassTicketGenerationGate) {
+        throw new Error("Ticket generation is temporarily unavailable.");
+    }
     const conn = await pool.getConnection();
     try {
         await conn.beginTransaction();
-        const [ledgerRows] = await conn.query(`SELECT * FROM payment_ledger WHERE id = :ledgerId AND status = 'pending' FOR UPDATE`, { ledgerId: ledger.id });
-        if (!ledgerRows[0]) {
+        const ledgerStatusSql = options?.recovery
+            ? `SELECT * FROM payment_ledger WHERE id = :ledgerId AND status IN ('pending', 'failed', 'completed') FOR UPDATE`
+            : `SELECT * FROM payment_ledger WHERE id = :ledgerId AND status = 'pending' FOR UPDATE`;
+        const [ledgerRows] = await conn.query(ledgerStatusSql, {
+            ledgerId: ledger.id,
+        });
+        const lockedLedger = ledgerRows[0];
+        if (!lockedLedger) {
             await conn.rollback();
             return;
         }
         const [orderRows] = await conn.query(`SELECT * FROM orders WHERE id = :orderId FOR UPDATE`, { orderId: ledger.order_id });
         const order = orderRows[0];
-        if (!order || order.status === "confirmed") {
+        if (!order) {
+            await conn.rollback();
+            return;
+        }
+        if (order.status === "confirmed" && !options?.recovery) {
+            await conn.rollback();
+            return;
+        }
+        if (options?.recovery) {
+            const [ticketCountRows] = await conn.query(`SELECT COUNT(*) AS cnt FROM user_tickets WHERE order_id = :orderId`, { orderId: ledger.order_id });
+            const existingTickets = Number(ticketCountRows[0]?.cnt ?? 0);
+            if (existingTickets > 0) {
+                await conn.rollback();
+                return;
+            }
+            if (lockedLedger.status !== "pending") {
+                await conn.query(`UPDATE payment_ledger
+           SET status = 'pending', failure_reason = NULL
+           WHERE id = :ledgerId`, { ledgerId: ledger.id });
+            }
+            if (order.status !== "pending") {
+                await conn.query(`UPDATE orders SET status = 'pending' WHERE id = :orderId`, { orderId: ledger.order_id });
+            }
+        }
+        else if (order.status === "confirmed") {
             await conn.rollback();
             return;
         }
         const meta = parseCheckoutMeta(ledger);
+        const listingId = String(meta.listingId ?? order.listing_id);
+        const listingForSideEffects = await getListingById(listingId, true);
         if (meta.resellListingId) {
             const resellResult = await fulfillResellSale(ledger, conn);
             if (resellResult) {
                 await conn.commit();
+                if (listingForSideEffects) {
+                    await runPostCheckoutSideEffects(ledger, listingForSideEffects, listingId, {
+                        delayedTicketEmail: options?.recovery,
+                    });
+                }
                 return resellResult;
             }
         }
-        const listingId = String(meta.listingId ?? order.listing_id);
         const seatNumbers = meta.seatNumbers ?? [];
         const lineCount = Number(meta.lineCount ?? meta.qty ?? 1);
-        const listing = await getListingById(listingId, true);
+        const listing = listingForSideEffects;
         if (!listing)
             throw new Error("Listing not found");
         const unitPrice = Number(meta.unitPrice ?? listing.price);
@@ -582,6 +868,8 @@ async function fulfillCheckout(ledger) {
         const subtotal = catalogSubtotal;
         const orderTotalCharged = Number(order.total_mwk ?? ledger.amount_mwk);
         const ticketIds = [];
+        const guestEmail = order.contact_email ? String(order.contact_email).toLowerCase() : null;
+        const ticketUserId = ledger.user_id ?? null;
         if (listing.kind === "travel" && seatNumbers.length) {
             await assertFulfillmentCapacity(conn, listingId, listing.kind, listing.ticketCapacity ?? null, seatNumbers.length, ledger.order_id);
             const travelAmounts = distributeTicketAmountPaid(orderTotalCharged, seatNumbers.length);
@@ -601,16 +889,58 @@ async function fulfillCheckout(ledger) {
                 await conn.query(`INSERT INTO order_items (id, order_id, seat_id, seat_number, quantity, unit_price, line_total)
            VALUES (:itemId, :orderId, :seatId, :seatNumber, 1, :unitPrice, :unitPrice)`, { itemId, orderId: ledger.order_id, seatId, seatNumber: num, unitPrice });
                 await conn.query(`UPDATE seats SET status = 'taken', customer_name = :customerName WHERE id = :seatId`, { seatId, customerName: order.contact_name });
-                await conn.query(`INSERT INTO user_tickets (id, user_id, order_id, listing_id, reference, qr_token, status, seat_number, amount_paid)
-           VALUES (:id, :userId, :orderId, :listingId, :reference, :qrToken, 'active', :seatNumber, :amount)`, {
+                await conn.query(`INSERT INTO user_tickets (id, user_id, order_id, listing_id, reference, qr_token, status, seat_number, amount_paid, guest_email)
+           VALUES (:id, :userId, :orderId, :listingId, :reference, :qrToken, 'active', :seatNumber, :amount, :guestEmail)`, {
                     id: ticketId,
-                    userId: ledger.user_id,
+                    userId: ticketUserId,
                     orderId: ledger.order_id,
                     listingId,
-                    reference: order.reference,
+                    reference: makeTicketReference(listingId),
                     qrToken,
                     seatNumber: num,
                     amount: travelAmounts[si] ?? unitPrice,
+                    guestEmail,
+                });
+                ticketIds.push(ticketId);
+            }
+        }
+        else if (listing.kind === "event" && seatNumbers.length > 0 && eventSeatingEnabled(listing)) {
+            await assertEventSpotsAvailable(listingId, seatNumbers, {
+                conn,
+                excludeOrderId: ledger.order_id,
+            });
+            await assertFulfillmentCapacity(conn, listingId, listing.kind, listing.ticketCapacity ?? null, seatNumbers.length, ledger.order_id);
+            if (tierId) {
+                await ticketTiersService.assertTierFulfillmentCapacity(conn, tierId, seatNumbers.length, ledger.order_id);
+            }
+            const eventAmounts = distributeTicketAmountPaid(orderTotalCharged, seatNumbers.length);
+            for (let si = 0; si < seatNumbers.length; si++) {
+                const num = seatNumbers[si];
+                await assertEventSpotsAvailable(listingId, [num], {
+                    conn,
+                    excludeOrderId: ledger.order_id,
+                });
+                const ticketId = uuid();
+                const qrToken = makeQrToken();
+                const amount = eventAmounts[si] ?? unitPrice;
+                await conn.query(`INSERT INTO user_tickets (
+             id, user_id, order_id, listing_id, ticket_tier_id, ticket_tier_name,
+             reference, qr_token, status, seat_number, amount_paid, guest_email
+           ) VALUES (
+             :id, :userId, :orderId, :listingId, :tierId, :tierName,
+             :reference, :qrToken, 'active', :seatNumber, :amount, :guestEmail
+           )`, {
+                    id: ticketId,
+                    userId: ticketUserId,
+                    orderId: ledger.order_id,
+                    listingId,
+                    tierId,
+                    tierName,
+                    reference: makeTicketReference(listingId),
+                    qrToken,
+                    seatNumber: num,
+                    amount,
+                    guestEmail,
                 });
                 ticketIds.push(ticketId);
             }
@@ -637,20 +967,21 @@ async function fulfillCheckout(ledger) {
                 const amount = eventAmounts[i] ?? unitPrice;
                 await conn.query(`INSERT INTO user_tickets (
              id, user_id, order_id, listing_id, ticket_tier_id, ticket_tier_name,
-             reference, qr_token, status, amount_paid
+             reference, qr_token, status, amount_paid, guest_email
            ) VALUES (
              :id, :userId, :orderId, :listingId, :tierId, :tierName,
-             :reference, :qrToken, 'active', :amount
+             :reference, :qrToken, 'active', :amount, :guestEmail
            )`, {
                     id: ticketId,
-                    userId: ledger.user_id,
+                    userId: ticketUserId,
                     orderId: ledger.order_id,
                     listingId,
                     tierId,
                     tierName,
-                    reference: order.reference,
+                    reference: makeTicketReference(listingId),
                     qrToken,
                     amount,
+                    guestEmail,
                 });
                 ticketIds.push(ticketId);
                 const isOngoingVirtual = listing.kind === "event" &&
@@ -665,26 +996,10 @@ async function fulfillCheckout(ledger) {
         await conn.query(`UPDATE payment_ledger SET status = 'completed', completed_at = NOW(), provider_status = 'success'
        WHERE id = :ledgerId`, { ledgerId: ledger.id });
         await conn.commit();
-        const metaAfter = parseCheckoutMeta(ledger);
-        await completeQueueEntry(metaAfter.queueId);
-        await syncListingSoldOutStatus(listingId, listing.kind, listing.ticketCapacity ?? null);
-        void syncOrganizerRefundRecovery(listing.organizerId).catch((err) => {
-            console.error("[refund-recovery] Post-checkout sync failed:", err);
-        });
-        const metaReferral = parseCheckoutMeta(ledger);
-        const referralId = metaReferral.referralId;
-        const referrerUserId = metaReferral.referrerUserId;
-        const referrerCommission = Number(metaReferral.referrerCommission ?? 0);
-        if (referralId && referrerUserId && referrerCommission > 0) {
-            void recordReferralEarning({
-                referralId,
-                orderId: ledger.order_id,
-                referrerUserId,
-                listingId,
-                commissionMwk: referrerCommission,
-                buyerDiscountMwk: Number(metaReferral.referralDiscount ?? 0),
-                catalogSubtotalMwk: Number(metaReferral.catalogSubtotal ?? metaReferral.subtotal ?? 0),
-            }).catch((err) => console.error("[referral] Earning record failed:", err));
+        if (listingForSideEffects) {
+            await runPostCheckoutSideEffects(ledger, listingForSideEffects, listingId, {
+                delayedTicketEmail: options?.recovery,
+            });
         }
         return ticketIds;
     }

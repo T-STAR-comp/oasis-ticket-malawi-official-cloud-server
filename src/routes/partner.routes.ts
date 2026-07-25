@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as partnerService from "../services/partner.service.js";
+import { requireFeature } from "../middleware/features.js";
 import { ok } from "../utils/http.js";
 
 const applicationSchema = z.object({
@@ -36,7 +37,7 @@ const applicationSchema = z.object({
 /** POST /api/partner-applications — become-organizer form */
 export const partnerRouter = Router();
 
-partnerRouter.post("/", async (req, res, next) => {
+partnerRouter.post("/", requireFeature("becomeOrganizer"), async (req, res, next) => {
   try {
     const body = applicationSchema.parse(req.body);
     const result = await partnerService.submitPartnerApplication(body);

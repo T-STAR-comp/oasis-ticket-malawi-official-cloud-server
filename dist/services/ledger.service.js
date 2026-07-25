@@ -23,6 +23,20 @@ export async function getLedgerByOrderId(orderId, userId) {
     const [rows] = await pool.query(sql, params);
     return rows[0] ?? null;
 }
+/** Pending guest checkout for the same browser session key. */
+export async function getGuestPendingLedger(guestKey) {
+    const normalized = guestKey.trim().slice(0, 64);
+    if (!normalized)
+        return null;
+    const [rows] = await pool.query(`SELECT pl.* FROM payment_ledger pl
+     WHERE pl.user_id IS NULL
+       AND pl.status = 'pending'
+       AND pl.expires_at > NOW()
+       AND JSON_UNQUOTE(JSON_EXTRACT(pl.checkout_meta, '$.guestKey')) = :guestKey
+     ORDER BY pl.created_at DESC
+     LIMIT 1`, { guestKey: normalized });
+    return rows[0] ?? null;
+}
 export async function getLedgerById(ledgerId) {
     const [rows] = await pool.query(`SELECT * FROM payment_ledger WHERE id = :ledgerId LIMIT 1`, { ledgerId });
     return rows[0] ?? null;

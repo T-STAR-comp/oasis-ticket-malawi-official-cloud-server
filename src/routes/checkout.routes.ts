@@ -5,8 +5,12 @@ import { getListingById } from "../services/listings.service.js";
 import * as queueService from "../services/queue.service.js";
 import { PayChanguError } from "../services/paychangu.service.js";
 import { requireAuth, type AuthedRequest } from "../middleware/auth.js";
+import { optionalAuth } from "../middleware/optionalAuth.js";
+import { requireFeature } from "../middleware/features.js";
+import { features } from "../config/features.js";
 import * as referralService from "../services/referral.service.js";
 import { fail, ok } from "../utils/http.js";
+import { log } from "../utils/logger.js";
 import {
   emptyToUndefined,
   formatZodError,
@@ -14,7 +18,6 @@ import {
   optionalUuid,
 } from "../utils/zod-helpers.js";
 
-/** Checkout body — contact details come from the signed-in user's profile server-side. */
 const checkoutSchema = z.object({
   qty: z.coerce.number().int().min(1).max(20).default(1),
   seatNumbers: z
@@ -35,11 +38,17 @@ const checkoutSchema = z.object({
     .array(z.string().uuid())
     .optional()
     .transform((ids) => (ids && ids.length > 0 ? ids : undefined)),
+  contactName: z.preprocess(emptyToUndefined, z.string().trim().min(2).max(120).optional()),
+  contactEmail: z.preprocess(emptyToUndefined, z.string().trim().email().optional()),
+  contactPhone: z.preprocess(emptyToUndefined, z.string().trim().min(8).max(32).optional()),
+  nationalId: z.preprocess(emptyToUndefined, z.string().trim().max(32).optional()),
+  guestKey: z.preprocess(emptyToUndefined, z.string().trim().min(8).max(64).optional()),
 });
 
 const accessQuerySchema = z.object({
   qty: z.coerce.number().int().min(1).max(20).default(1),
   seats: z.string().optional(),
+  guestKey: z.preprocess(emptyToUndefined, z.string().trim().min(8).max(64).optional()),
 });
 
 export const checkoutRouter = Router();
@@ -55,7 +64,29 @@ const pricingQuerySchema = z.object({
   virtualSessions: z.string().optional(),
 });
 
-/** GET /api/checkout/:listingId/pricing — server-side fee preview (default / custom / dynamic) */
+function checkoutError(err: unknown, res: import("express").Response, next: import("express").NextFunction) {
+  if (err instanceof z.ZodError) return fail(res, formatZodError(err), 400);
+  if (err instanceof PayChanguError) {
+    return fail(res, err.message, err.status >= 400 && err.status < 500 ? err.status : 402);
+  }
+  if (err instanceof Error) {
+    if (err.message.includes("not available")) return fail(res, err.message, 409);
+    if (err.message.includes("payment in progress")) return fail(res, err.message, 409);
+    if (err.message.includes("sold out") || err.message.includes("remaining")) {
+      return fail(res, err.message, 409);
+    }
+    if (err.message.includes("queue") || err.message.includes("High demand")) {
+      return fail(res, err.message, 409);
+    }
+    if (err.message.includes("not available for purchase")) return fail(res, err.message, 409);
+    if (err.message.includes("required") || err.message.includes("not enabled")) {
+      return fail(res, err.message, 400);
+    }
+    if (err.message.includes("PayChangu")) return fail(res, err.message, 402);
+  }
+  next(err);
+}
+
 checkoutRouter.get("/:listingId/pricing", async (req, res, next) => {
   try {
     const listingId = String(req.params.listingId);
@@ -84,7 +115,6 @@ checkoutRouter.get("/:listingId/pricing", async (req, res, next) => {
   }
 });
 
-/** GET /api/checkout/:listingId/referral — validate referral code */
 checkoutRouter.get("/:listingId/referral", async (req, res, next) => {
   try {
     const listingId = String(req.params.listingId);
@@ -106,10 +136,9 @@ checkoutRouter.get("/:listingId/referral", async (req, res, next) => {
   }
 });
 
-/** GET /api/checkout/:listingId/access — queue position / direct checkout access */
-checkoutRouter.get("/:listingId/access", requireAuth, async (req, res, next) => {
+checkoutRouter.get("/:listingId/access", optionalAuth, async (req, res, next) => {
   try {
-    const user = (req as AuthedRequest).user!;
+    const user = (req as AuthedRequest).user;
     const query = accessQuerySchema.parse(req.query);
     const listingId = String(req.params.listingId);
     const listing = await getListingById(listingId, true);
@@ -121,9 +150,18 @@ checkoutRouter.get("/:listingId/access", requireAuth, async (req, res, next) => 
     const qty =
       seatNumbers && seatNumbers.length > 0 ? seatNumbers.length : query.qty;
 
+    const participant = user
+      ? { userId: user.id }
+      : query.guestKey
+        ? { guestKey: query.guestKey }
+        : null;
+    if (!participant) {
+      return fail(res, "Sign in or provide a guest session key for queue access.", 401);
+    }
+
     const access = await queueService.getCheckoutAccess(
       listingId,
-      user.id,
+      participant,
       qty,
       seatNumbers,
       listing.kind,
@@ -136,11 +174,14 @@ checkoutRouter.get("/:listingId/access", requireAuth, async (req, res, next) => 
   }
 });
 
-/** GET /api/checkout/queue/:queueId — poll queue position */
-checkoutRouter.get("/queue/:queueId", requireAuth, async (req, res, next) => {
+checkoutRouter.get("/queue/:queueId", optionalAuth, async (req, res, next) => {
   try {
-    const user = (req as AuthedRequest).user!;
-    const result = await queueService.pollQueueStatus(String(req.params.queueId), user.id);
+    const user = (req as AuthedRequest).user;
+    const guestKey = typeof req.query.guestKey === "string" ? req.query.guestKey.trim() : "";
+    const participant = user ? { userId: user.id } : guestKey ? { guestKey } : null;
+    if (!participant) return fail(res, "Authentication or guest key required", 401);
+
+    const result = await queueService.pollQueueStatus(String(req.params.queueId), participant);
     return ok(res, result);
   } catch (err) {
     if (err instanceof Error && err.message.includes("not found")) {
@@ -150,47 +191,62 @@ checkoutRouter.get("/queue/:queueId", requireAuth, async (req, res, next) => {
   }
 });
 
-/** POST /api/checkout/:listingId — initiate PayChangu payment (ledger pending) */
-checkoutRouter.post("/:listingId", requireAuth, async (req, res, next) => {
-  try {
-    const user = (req as AuthedRequest).user!;
-    const body = checkoutSchema.parse(req.body);
-    const listingId = String(req.params.listingId);
-    const result = await checkoutService.initiateCheckout(user.id, listingId, body);
-    return ok(res, result, 201);
-  } catch (err) {
-    if (err instanceof z.ZodError) return fail(res, formatZodError(err), 400);
-    if (err instanceof PayChanguError) {
-      return fail(res, err.message, err.status >= 400 && err.status < 500 ? err.status : 402);
-    }
-    if (err instanceof Error) {
-      if (err.message.includes("not available")) return fail(res, err.message, 409);
-      if (err.message.includes("payment in progress")) return fail(res, err.message, 409);
-      if (err.message.includes("sold out") || err.message.includes("remaining")) {
-        return fail(res, err.message, 409);
-      }
-      if (err.message.includes("queue") || err.message.includes("High demand")) {
-        return fail(res, err.message, 409);
-      }
-      if (err.message.includes("not available for purchase")) {
-        return fail(res, err.message, 409);
-      }
-      if (err.message.includes("required") || err.message.includes("not enabled")) {
-        return fail(res, err.message, 400);
-      }
-      if (err.message.includes("PayChangu")) return fail(res, err.message, 402);
-    }
-    next(err);
-  }
-});
+checkoutRouter.post(
+  "/:listingId",
+  requireFeature("payments"),
+  optionalAuth,
+  async (req, res, next) => {
+    try {
+      const user = (req as AuthedRequest).user;
+      const body = checkoutSchema.parse(req.body);
+      const listingId = String(req.params.listingId);
 
-/** GET /api/checkout/orders/:orderId/status — poll payment + ticket generation */
-checkoutRouter.get("/orders/:orderId/status", requireAuth, async (req, res, next) => {
+      if (body.guestKey && features.guestCheckout) {
+        const result = await checkoutService.initiateGuestCheckout(listingId, body, body.guestKey);
+        log.info("checkout", "Guest checkout payment initiated", {
+          listingId,
+          orderId: result.orderId,
+          ledgerId: result.ledgerId,
+          reference: result.reference,
+        });
+        return ok(res, result, 201);
+      }
+
+      if (user) {
+        const result = await checkoutService.initiateCheckout(user.id, listingId, body);
+        return ok(res, result, 201);
+      }
+
+      if (!features.guestCheckout) {
+        return fail(res, "Sign in to purchase tickets.", 401);
+      }
+      return fail(res, "Guest session key is required.", 400);
+    } catch (err) {
+      checkoutError(err, res, next);
+    }
+  },
+);
+
+checkoutRouter.get("/orders/:orderId/status", optionalAuth, async (req, res, next) => {
   try {
-    const user = (req as AuthedRequest).user!;
+    const user = (req as AuthedRequest).user;
     const orderId = String(req.params.orderId);
-    const result = await checkoutService.getOrderPaymentStatus(user.id, orderId);
-    return ok(res, result);
+    const guestToken =
+      typeof req.query.token === "string" ? req.query.token.trim() : "";
+
+    if (guestToken) {
+      const result = await checkoutService.getOrderPaymentStatus(orderId, {
+        guestAccessToken: guestToken,
+      });
+      return ok(res, result);
+    }
+
+    if (user) {
+      const result = await checkoutService.getOrderPaymentStatus(orderId, { userId: user.id });
+      return ok(res, result);
+    }
+
+    return fail(res, "Sign in or provide guest access token.", 401);
   } catch (err) {
     if (err instanceof Error && err.message.includes("not found")) {
       return fail(res, err.message, 404);
@@ -198,3 +254,5 @@ checkoutRouter.get("/orders/:orderId/status", requireAuth, async (req, res, next
     next(err);
   }
 });
+
+export { guestTicketsRouter } from "./guest-tickets.routes.js";

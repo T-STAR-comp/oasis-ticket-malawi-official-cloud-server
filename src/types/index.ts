@@ -45,6 +45,7 @@ export interface ListingRow {
   route_to: string | null;
   route_duration: string | null;
   status: ListingStatus;
+  event_layout_json?: string | Record<string, unknown> | null;
 }
 
 export interface VirtualEventSessionRow {

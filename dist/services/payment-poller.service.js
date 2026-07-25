@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import { log } from "../utils/logger.js";
 import { failStalePendingPayments, processPendingLedgerEntry } from "./checkout.service.js";
 import { listPendingLedgerEntries } from "./ledger.service.js";
 let timer = null;
@@ -14,12 +15,15 @@ export function startPaymentPoller() {
             }
         }
         catch (err) {
-            console.error("[payment-poller] tick failed:", err);
+            log.error("payment-poller", "Tick failed", err);
         }
     };
     void tick();
     timer = setInterval(tick, env.paychangu.pollIntervalMs);
-    console.log(`[payment-poller] Started (every ${env.paychangu.pollIntervalMs}ms, timeout ${env.paychangu.pendingTimeoutMs}ms)`);
+    log.info("payment-poller", "Started", {
+        intervalMs: env.paychangu.pollIntervalMs,
+        timeoutMs: env.paychangu.pendingTimeoutMs,
+    });
 }
 export function stopPaymentPoller() {
     if (timer) {

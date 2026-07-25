@@ -7,8 +7,9 @@ import {
   isReferencedRowError,
 } from "../utils/db-errors.js";
 import { formatZodError } from "../utils/zod-helpers.js";
+import { log } from "../utils/logger.js";
 
-export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
+export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction) {
   if (isDuplicateEntryError(err)) {
     return res.status(409).json({
       success: false,
@@ -37,6 +38,10 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     return res.status(403).json({ success: false, error: "Forbidden" });
   }
 
-  console.error(err);
+  log.error("http", "Unhandled request error", err, {
+    method: req.method,
+    path: req.originalUrl,
+    status: 500,
+  });
   return res.status(500).json({ success: false, error: "Internal server error" });
 }

@@ -21,10 +21,9 @@ resellRouter.get("/", async (_req, res, next) => {
 resellRouter.get("/orders/:orderId/status", requireAuth, async (req, res, next) => {
   try {
     const user = (req as AuthedRequest).user!;
-    const result = await checkoutService.getOrderPaymentStatus(
-      user.id,
-      String(req.params.orderId),
-    );
+    const result = await checkoutService.getOrderPaymentStatus(String(req.params.orderId), {
+      userId: user.id,
+    });
     return ok(res, result);
   } catch (err) {
     if (err instanceof Error && err.message.includes("not found")) {

@@ -1,5 +1,7 @@
 import nodemailer from "nodemailer";
 import { env } from "../config/env.js";
+import { features } from "../config/features.js";
+import { log } from "../utils/logger.js";
 let transporter = null;
 let smtpUnavailable = false;
 let smtpUnavailableLogged = false;
@@ -8,21 +10,17 @@ function logSmtpUnavailable(reason) {
     transporter = null;
     if (!smtpUnavailableLogged) {
         smtpUnavailableLogged = true;
-        console.warn(`[email] SMTP unavailable (${reason}) — emails will be logged to console only.`);
+        log.warn("email", "SMTP unavailable — emails will be logged to console only", { reason });
     }
 }
 function getTransporter() {
-    console.log({
-        host: env.mail.host,
-        port: env.mail.port,
-        secure: env.mail.secure,
-        user: env.mail.user,
-        passwordLength: env.mail.pass.length,
-    });
     if (smtpUnavailable)
         return null;
     if (!env.mail.host || !env.mail.user) {
-        console.warn("[email] SMTP not configured — emails will be logged to console only.");
+        if (!smtpUnavailableLogged) {
+            smtpUnavailableLogged = true;
+            log.warn("email", "SMTP not configured — emails will be logged to console only");
+        }
         return null;
     }
     if (!transporter) {
@@ -32,6 +30,7 @@ function getTransporter() {
             secure: env.mail.secure,
             auth: { user: env.mail.user, pass: env.mail.pass },
         });
+        log.info("email", "SMTP transporter initialized", { host: env.mail.host, port: env.mail.port });
     }
     return transporter;
 }
@@ -48,24 +47,40 @@ function wrapHtml(title, body) {
     <p style="margin-top:32px;font-size:12px;color:#6b7280">Ticket Malawi — Powered by Oasis</p>
   </body></html>`;
 }
-export async function sendEmail(to, subject, html) {
+export async function sendEmail(to, subject, html, attachments) {
+    if (!features.email) {
+        log.info("email", "Email feature disabled — skipped send", { to, subject });
+        return { sent: false, logged: true, disabled: true };
+    }
     const transport = getTransporter();
     const from = `"${env.mail.fromName}" <${env.mail.fromAddress}>`;
     if (!transport) {
-        console.log(`[email] To: ${to} | Subject: ${subject}\n${html.replace(/<[^>]+>/g, " ")}`);
+        log.info("email", "Email logged (no SMTP transport)", { to, subject });
         return { sent: false, logged: true };
     }
     try {
-        await transport.sendMail({ from, to, subject, html });
+        await transport.sendMail({
+            from,
+            to,
+            subject,
+            html,
+            attachments: attachments?.map((a) => ({
+                filename: a.filename,
+                content: a.content,
+                contentType: "application/pdf",
+            })),
+        });
+        log.info("email", "Email sent", { to, subject, attachmentCount: attachments?.length ?? 0 });
         return { sent: true };
     }
     catch (err) {
         if (isSmtpTransportError(err)) {
             const reason = err instanceof Error ? err.message : "transport error";
             logSmtpUnavailable(reason);
-            console.log(`[email] To: ${to} | Subject: ${subject}\n${html.replace(/<[^>]+>/g, " ")}`);
+            log.warn("email", "SMTP send failed — logged email content instead", { to, subject, reason });
             return { sent: false, logged: true };
         }
+        log.error("email", "Email send failed", err, { to, subject });
         throw err;
     }
 }
@@ -288,4 +303,22 @@ export async function sendOrganizerRefundDebtEmail(input) {
          <li><strong>Outstanding (unrecovered):</strong> MK ${input.outstanding.toLocaleString()}</li>
        </ul>
        <p>Until this outstanding amount is cleared, <strong>withdrawals are blocked</strong>. When you publish new listings and customers purchase tickets, settled earnings from those sales are applied to customer refunds first. Only after every affected customer is paid back will you have a positive withdrawable balance again.</p>`));
+}
+export async function sendTicketPurchaseEmail(input) {
+    const guestLine = input.guestTicketsUrl
+        ? `<p>View your tickets anytime at <a href="${input.guestTicketsUrl}">Guest tickets</a> using your ticket reference and email.</p>`
+        : `<p>Your tickets are also available in your Ticket Malawi dashboard under <strong>My Tickets</strong>.</p>`;
+    return sendEmail(input.email, `Your tickets for ${input.listingTitle}`, wrapHtml("Purchase confirmed", `<p>Hi ${input.buyerName},</p>
+       <p>Thank you for your purchase! Your ${input.ticketCount} ticket(s) for <strong>${input.listingTitle}</strong> are attached as PDF files.</p>
+       ${guestLine}
+       <p>Bring your QR code (in the PDF or on your phone) to the gate or boarding point.</p>`), input.attachments);
+}
+export async function sendDelayedTicketApologyEmail(input) {
+    const guestLine = input.guestTicketsUrl
+        ? `<p>Look them up anytime at <a href="${input.guestTicketsUrl}">Guest tickets</a>.</p>`
+        : "";
+    return sendEmail(input.email, `Your tickets for ${input.listingTitle} — finally here!`, wrapHtml("Sorry for the delay!", `<p>Hi ${input.buyerName},</p>
+       <p>Sorry for the delay — here are your tickets to <strong>${input.listingTitle}</strong>.</p>
+       <p>${input.ticketCount} ticket PDF(s) are attached.</p>
+       ${guestLine}`), input.attachments);
 }

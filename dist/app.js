@@ -5,12 +5,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IMAGE_BUCKET_URL_PREFIX, resolveImageBucketDir } from "./config/images.js";
 import { env } from "./config/env.js";
+import { featureFlagsForPublic } from "./config/features.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { authRouter } from "./routes/auth.routes.js";
 import { listingsRouter } from "./routes/listings.routes.js";
 import { eventsRouter } from "./routes/events.routes.js";
 import { travelRouter } from "./routes/travel.routes.js";
-import { checkoutRouter } from "./routes/checkout.routes.js";
+import { checkoutRouter, guestTicketsRouter } from "./routes/checkout.routes.js";
 import { dashboardRouter } from "./routes/dashboard.routes.js";
 import { organizerRouter } from "./routes/organizer.routes.js";
 import { partnerRouter } from "./routes/partner.routes.js";
@@ -26,12 +27,14 @@ import { LEGAL_VERSION } from "./config/legal.js";
 import * as platformSettingsService from "./services/platform-settings.service.js";
 import { registerFrontend } from "./middleware/serveFrontend.js";
 import { registerAdminFrontend } from "./middleware/serveAdmin.js";
+import { requestLogger } from "./middleware/requestLogger.js";
 /** Bump when deploy verification fields on /api/health change. */
 export const API_BUILD_VERSION = 3;
 export function createApp() {
     const app = express();
     app.use(cors({ origin: env.corsOrigins, credentials: true }));
     app.use(express.json({ limit: "1mb" }));
+    app.use(requestLogger);
     const bucketDir = resolveImageBucketDir();
     if (!fs.existsSync(bucketDir)) {
         fs.mkdirSync(bucketDir, { recursive: true });
@@ -108,6 +111,7 @@ export function createApp() {
                 referralPayoutFeePercent: env.referrals.payoutFeePercent,
                 authProvider: env.auth.provider,
                 firebaseAuthEnabled: env.firebase.enabled,
+                features: featureFlagsForPublic(),
             },
         });
     });
@@ -132,8 +136,10 @@ export function createApp() {
     app.use("/api/careers", careersRouter);
     app.use("/api/resell", resellRouter);
     app.use("/api/self-checkin", selfCheckinRouter);
+    app.use("/api/guest-tickets", guestTicketsRouter);
     registerAdminFrontend(app, env.serveFrontend);
     registerFrontend(app, env.serveFrontend);
+    //updated
     app.use(errorHandler);
     return app;
 }

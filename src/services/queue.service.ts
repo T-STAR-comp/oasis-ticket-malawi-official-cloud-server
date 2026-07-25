@@ -9,10 +9,16 @@ const LOW_REMAINING_PENDING_MIN = 2;
 const MAX_READY_SLOTS = 3;
 const READY_WINDOW_SEC = 120;
 
+export type QueueParticipant = {
+  userId?: string;
+  guestKey?: string;
+};
+
 type QueueRow = RowDataPacket & {
   id: string;
   listing_id: string;
-  user_id: string;
+  user_id: string | null;
+  guest_key: string | null;
   qty: number;
   seat_numbers: string | null;
   status: string;
@@ -20,6 +26,12 @@ type QueueRow = RowDataPacket & {
   ready_at: Date | null;
   ready_expires_at: Date | null;
 };
+
+function assertQueueParticipant(participant: QueueParticipant) {
+  if (!participant.userId && !participant.guestKey?.trim()) {
+    throw new Error("Queue participant identity is required");
+  }
+}
 
 export async function isHighTraffic(
   listingId: string,
@@ -124,14 +136,36 @@ async function countWaiting(listingId: string): Promise<number> {
   return Number(rows[0]?.cnt ?? 0);
 }
 
+async function findActiveQueueEntry(listingId: string, participant: QueueParticipant) {
+  if (participant.userId) {
+    const [rows] = await pool.query<QueueRow[]>(
+      `SELECT * FROM checkout_queue
+       WHERE listing_id = :listingId AND user_id = :userId
+         AND status IN ('waiting', 'ready')
+       ORDER BY created_at DESC LIMIT 1`,
+      { listingId, userId: participant.userId },
+    );
+    return rows[0];
+  }
+  const [rows] = await pool.query<QueueRow[]>(
+    `SELECT * FROM checkout_queue
+     WHERE listing_id = :listingId AND guest_key = :guestKey
+       AND status IN ('waiting', 'ready')
+     ORDER BY created_at DESC LIMIT 1`,
+    { listingId, guestKey: participant.guestKey },
+  );
+  return rows[0];
+}
+
 export async function getCheckoutAccess(
   listingId: string,
-  userId: string,
+  participant: QueueParticipant,
   qty: number,
   seatNumbers: number[] | undefined,
   kind: "event" | "travel",
   ticketCapacity: number | null | undefined,
 ) {
+  assertQueueParticipant(participant);
   const highTraffic = await isHighTraffic(listingId, kind, ticketCapacity);
   if (!highTraffic) {
     return {
@@ -146,28 +180,35 @@ export async function getCheckoutAccess(
 
   await promoteWaitingEntries(listingId, kind, ticketCapacity);
 
-  const [existing] = await pool.query<QueueRow[]>(
-    `SELECT * FROM checkout_queue
-     WHERE listing_id = :listingId AND user_id = :userId
-       AND status IN ('waiting', 'ready')
-     ORDER BY created_at DESC LIMIT 1`,
-    { listingId, userId },
-  );
-  let entry = existing[0];
+  let entry = await findActiveQueueEntry(listingId, participant);
 
   if (!entry) {
     const queueId = uuid();
-    await pool.query(
-      `INSERT INTO checkout_queue (id, listing_id, user_id, qty, seat_numbers, status)
-       VALUES (:id, :listingId, :userId, :qty, :seatNumbers, 'waiting')`,
-      {
-        id: queueId,
-        listingId,
-        userId,
-        qty,
-        seatNumbers: seatNumbers?.length ? JSON.stringify(seatNumbers) : null,
-      },
-    );
+    if (participant.userId) {
+      await pool.query(
+        `INSERT INTO checkout_queue (id, listing_id, user_id, qty, seat_numbers, status)
+         VALUES (:id, :listingId, :userId, :qty, :seatNumbers, 'waiting')`,
+        {
+          id: queueId,
+          listingId,
+          userId: participant.userId,
+          qty,
+          seatNumbers: seatNumbers?.length ? JSON.stringify(seatNumbers) : null,
+        },
+      );
+    } else {
+      await pool.query(
+        `INSERT INTO checkout_queue (id, listing_id, guest_key, qty, seat_numbers, status)
+         VALUES (:id, :listingId, :guestKey, :qty, :seatNumbers, 'waiting')`,
+        {
+          id: queueId,
+          listingId,
+          guestKey: participant.guestKey,
+          qty,
+          seatNumbers: seatNumbers?.length ? JSON.stringify(seatNumbers) : null,
+        },
+      );
+    }
     await promoteWaitingEntries(listingId, kind, ticketCapacity);
     const [refreshed] = await pool.query<QueueRow[]>(
       `SELECT * FROM checkout_queue WHERE id = :id`,
@@ -207,7 +248,7 @@ export async function getCheckoutAccess(
 
 export async function assertQueueCheckoutAllowed(
   listingId: string,
-  userId: string,
+  participant: QueueParticipant,
   queueId: string | undefined,
   kind: "event" | "travel",
   ticketCapacity: number | null | undefined,
@@ -223,11 +264,20 @@ export async function assertQueueCheckoutAllowed(
 
   await promoteWaitingEntries(listingId, kind, ticketCapacity);
 
-  const [rows] = await pool.query<QueueRow[]>(
-    `SELECT * FROM checkout_queue
-     WHERE id = :queueId AND listing_id = :listingId AND user_id = :userId`,
-    { queueId, listingId, userId },
-  );
+  let rows: QueueRow[];
+  if (participant.userId) {
+    [rows] = await pool.query<QueueRow[]>(
+      `SELECT * FROM checkout_queue
+       WHERE id = :queueId AND listing_id = :listingId AND user_id = :userId`,
+      { queueId, listingId, userId: participant.userId },
+    );
+  } else {
+    [rows] = await pool.query<QueueRow[]>(
+      `SELECT * FROM checkout_queue
+       WHERE id = :queueId AND listing_id = :listingId AND guest_key = :guestKey`,
+      { queueId, listingId, guestKey: participant.guestKey },
+    );
+  }
   const entry = rows[0];
   if (!entry) {
     throw new Error("Checkout queue entry not found. Please rejoin the queue.");
@@ -259,14 +309,26 @@ export async function completeQueueEntry(queueId: string | undefined) {
   );
 }
 
-export async function pollQueueStatus(queueId: string, userId: string) {
-  const [rows] = await pool.query<QueueRow[]>(
-    `SELECT cq.*, l.kind, l.ticket_capacity
-     FROM checkout_queue cq
-     JOIN listings l ON l.id = cq.listing_id
-     WHERE cq.id = :queueId AND cq.user_id = :userId`,
-    { queueId, userId },
-  );
+export async function pollQueueStatus(queueId: string, participant: QueueParticipant) {
+  assertQueueParticipant(participant);
+  let rows: QueueRow[];
+  if (participant.userId) {
+    [rows] = await pool.query<QueueRow[]>(
+      `SELECT cq.*, l.kind, l.ticket_capacity
+       FROM checkout_queue cq
+       JOIN listings l ON l.id = cq.listing_id
+       WHERE cq.id = :queueId AND cq.user_id = :userId`,
+      { queueId, userId: participant.userId },
+    );
+  } else {
+    [rows] = await pool.query<QueueRow[]>(
+      `SELECT cq.*, l.kind, l.ticket_capacity
+       FROM checkout_queue cq
+       JOIN listings l ON l.id = cq.listing_id
+       WHERE cq.id = :queueId AND cq.guest_key = :guestKey`,
+      { queueId, guestKey: participant.guestKey },
+    );
+  }
   const entry = rows[0];
   if (!entry) throw new Error("Queue entry not found");
 

@@ -8,6 +8,8 @@ import * as careersService from "../services/careers.service.js";
 import * as virtualPayoutService from "../services/virtual-payout.service.js";
 import * as platformSettingsService from "../services/platform-settings.service.js";
 import * as adminInformationService from "../services/admin-information.service.js";
+import * as adminPaymentsService from "../services/admin-payments.service.js";
+import { reconcileAllProcessingPayouts } from "../services/payout-reconciliation.service.js";
 import { requireAuth, requireRole, signToken, type AuthedRequest } from "../middleware/auth.js";
 import { fail, ok } from "../utils/http.js";
 
@@ -72,6 +74,62 @@ adminRouter.get("/stats", async (_req, res, next) => {
 adminRouter.get("/statistics", async (_req, res, next) => {
   try {
     return ok(res, await adminStatisticsService.getAdminStatistics());
+  } catch (err) {
+    next(err);
+  }
+});
+
+adminRouter.get("/payments", async (req, res, next) => {
+  try {
+    const status = req.query.status as string | undefined;
+    const search = req.query.search as string | undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset ? Number(req.query.offset) : undefined;
+    return ok(res, await adminPaymentsService.listAdminPayments({ status, search, limit, offset }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+adminRouter.get("/payments/:ledgerId", async (req, res, next) => {
+  try {
+    const payment = await adminPaymentsService.getAdminPaymentDetail(req.params.ledgerId);
+    if (!payment) return fail(res, "Payment not found", 404);
+    return ok(res, payment);
+  } catch (err) {
+    next(err);
+  }
+});
+
+adminRouter.post("/payments/:ledgerId/fulfill", async (req, res, next) => {
+  try {
+    const result = await adminPaymentsService.adminManualFulfillPayment(req.params.ledgerId);
+    return ok(res, result);
+  } catch (err) {
+    if (err instanceof Error) {
+      if (err.message === "Payment not found") return fail(res, err.message, 404);
+      return fail(res, err.message, 400);
+    }
+    next(err);
+  }
+});
+
+adminRouter.post("/payments/:ledgerId/resend-email", async (req, res, next) => {
+  try {
+    const result = await adminPaymentsService.adminResendTicketEmail(req.params.ledgerId);
+    return ok(res, result);
+  } catch (err) {
+    if (err instanceof Error) {
+      if (err.message === "Payment not found") return fail(res, err.message, 404);
+      return fail(res, err.message, 400);
+    }
+    next(err);
+  }
+});
+
+adminRouter.post("/payouts/reconcile", async (_req, res, next) => {
+  try {
+    return ok(res, await reconcileAllProcessingPayouts(100));
   } catch (err) {
     next(err);
   }

@@ -5,7 +5,7 @@ export type LedgerStatus = "pending" | "completed" | "failed";
 
 export type LedgerRow = {
   id: string;
-  user_id: string;
+  user_id: string | null;
   order_id: string;
   status: LedgerStatus;
   paychangu_charge_id: string;
@@ -56,6 +56,23 @@ export async function getLedgerByOrderId(orderId: string, userId?: string): Prom
   }
   sql += ` LIMIT 1`;
   const [rows] = await pool.query<RowDataPacket[]>(sql, params);
+  return (rows[0] as LedgerRow | undefined) ?? null;
+}
+
+/** Pending guest checkout for the same browser session key. */
+export async function getGuestPendingLedger(guestKey: string): Promise<LedgerRow | null> {
+  const normalized = guestKey.trim().slice(0, 64);
+  if (!normalized) return null;
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT pl.* FROM payment_ledger pl
+     WHERE pl.user_id IS NULL
+       AND pl.status = 'pending'
+       AND pl.expires_at > NOW()
+       AND JSON_UNQUOTE(JSON_EXTRACT(pl.checkout_meta, '$.guestKey')) = :guestKey
+     ORDER BY pl.created_at DESC
+     LIMIT 1`,
+    { guestKey: normalized },
+  );
   return (rows[0] as LedgerRow | undefined) ?? null;
 }
 

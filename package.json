@@ -37,9 +37,13 @@
     "db:migrate:ticket-virtual-sessions": "node scripts/run-sql.js database/migration-v21-user-ticket-virtual-sessions.sql",
     "db:migrate:resell-pending": "node scripts/run-sql.js database/migration-v22-resell-pending-sale.sql",
     "db:migrate:service-fee-settings": "node scripts/run-sql.js database/migration-v23-service-fee-settings.sql",
+    "db:migrate:guest-checkout": "node scripts/run-sql.js database/migration-v24-guest-checkout.sql",
+    "db:migrate:event-layout": "node scripts/run-sql.js database/migration-v25-event-layout.sql",
     "photos:optimize": "node scripts/optimize-marketing-photos.mjs"
   },
   "dependencies": {
+    "@types/pdfkit": "^0.17.6",
+    "@types/qrcode": "^1.5.6",
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
@@ -49,6 +53,8 @@
     "multer": "^2.1.1",
     "mysql2": "^3.12.0",
     "nodemailer": "^8.0.10",
+    "pdfkit": "^0.19.1",
+    "qrcode": "^1.5.4",
     "sharp": "^0.34.5",
     "uuid": "^11.0.5",
     "zod": "^3.24.2"

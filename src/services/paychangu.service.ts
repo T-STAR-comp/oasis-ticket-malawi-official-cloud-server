@@ -1,4 +1,5 @@
 import { env } from "../config/env.js";
+import { log } from "../utils/logger.js";
 
 export type MomoOperator = "airtel" | "tnm";
 
@@ -239,7 +240,7 @@ export async function initiateMobileMoneyCharge(input: {
     last_name: last,
   };
 
-  console.log("[paychangu] init charge", input.chargeId, payload.mobile, payload.amount);
+  log.info("paychangu", "Init charge", { chargeId: input.chargeId, mobile: payload.mobile, amount: payload.amount });
 
   const res = await fetch(`${env.paychangu.baseUrl}/mobile-money/payments/initialize`, {
     method: "POST",
@@ -252,14 +253,14 @@ export async function initiateMobileMoneyCharge(input: {
 
   if (!res.ok || topStatus === "failed") {
     const message = formatPayChanguError(body, "PayChangu payment initiation failed");
-    console.error("[paychangu] init failed:", res.status, JSON.stringify(body));
+    log.error("paychangu", "Init failed", undefined, { status: res.status, body });
     throw new PayChanguError(message, res.status, body);
   }
 
   const data = (body.data ?? {}) as Record<string, unknown>;
   const chargeId = data.charge_id ? String(data.charge_id) : "";
   if (!chargeId) {
-    console.error("[paychangu] init missing charge_id:", JSON.stringify(body));
+    log.error("paychangu", "Init missing charge_id", undefined, { body });
     throw new PayChanguError(
       "PayChangu accepted the request but did not return a charge ID",
       res.status,
@@ -312,9 +313,92 @@ export async function verifyMobileMoneyCharge(
   const result = interpretVerifyBody(body, res.ok);
 
   if (result.success) {
-    console.log("[paychangu] verify success", chargeId, result.providerStatus);
+    log.info("paychangu", "Verify success", { chargeId, providerStatus: result.providerStatus });
   } else if (result.failed) {
-    console.warn("[paychangu] verify failed", chargeId, JSON.stringify(body));
+    log.warn("paychangu", "Verify failed", { chargeId, body });
+  }
+
+  return result;
+}
+
+/** Verify a direct-charge transaction (payouts, bank transfers, etc.) by charge ID. */
+/** PayChangu returns this when a charge ID is unknown — not the same as a declined payout. */
+function isDirectChargeNotFound(body: Record<string, unknown>): boolean {
+  const topStatus = String(body.status ?? "").toLowerCase();
+  const message = String(body.message ?? body.error ?? "").toLowerCase();
+  return topStatus === "failed" && message.includes("not found");
+}
+
+const DIRECT_CHARGE_NOT_FOUND_STALE_MS = 24 * 60 * 60 * 1000;
+
+export async function verifyDirectChargeTransaction(
+  chargeId: string,
+  initiatedAt?: Date,
+): Promise<PayChanguVerifyResult> {
+  if (env.paychangu.mock) {
+    const started = initiatedAt?.getTime() ?? Date.now();
+    const elapsed = Date.now() - started;
+    if (elapsed < env.paychangu.mockSuccessDelayMs) {
+      return {
+        success: false,
+        pending: true,
+        failed: false,
+        providerStatus: "processing",
+        message: "Mock payout still processing",
+        raw: { mock: true, elapsed },
+      };
+    }
+    return {
+      success: true,
+      pending: false,
+      failed: false,
+      providerStatus: "success",
+      message: "Mock payout completed",
+      raw: { mock: true, elapsed },
+    };
+  }
+
+  const res = await fetch(
+    `${env.paychangu.baseUrl}/direct-charge/transactions/${encodeURIComponent(chargeId)}/details`,
+    { method: "GET", headers: authHeaders() },
+  );
+
+  const body = await parseJsonResponse(res);
+
+  if (isDirectChargeNotFound(body)) {
+    const ageMs = initiatedAt ? Date.now() - initiatedAt.getTime() : Infinity;
+    const message = String(body.message ?? "Transaction record not found.");
+    if (ageMs < DIRECT_CHARGE_NOT_FOUND_STALE_MS) {
+      log.info("paychangu", "Direct charge not indexed yet", { chargeId, ageMs });
+      return {
+        success: false,
+        pending: true,
+        failed: false,
+        providerStatus: "not_found",
+        message,
+        raw: body,
+      };
+    }
+    log.warn("paychangu", "Direct charge not found (stale)", { chargeId, body });
+    return {
+      success: false,
+      pending: false,
+      failed: true,
+      providerStatus: "not_found",
+      message: `${message} (charge older than 24h)`,
+      raw: body,
+    };
+  }
+
+  const result = interpretVerifyBody(body, res.ok);
+
+  if (result.success) {
+    log.info("paychangu", "Direct charge verify success", {
+      chargeId,
+      providerStatus: result.providerStatus,
+    });
+  } else if (result.failed) {
+    log.warn("paychangu", "Direct charge verify failed", { chargeId, body });
   }
 
   return result;
@@ -323,7 +407,7 @@ export async function verifyMobileMoneyCharge(
 /** Refund a card charge back to the customer's card (same payment method). */
 export async function refundCardCharge(chargeId: string): Promise<Record<string, unknown>> {
   if (env.paychangu.mock) {
-    console.log("[paychangu] mock card refund", chargeId);
+    log.info("paychangu", "Mock card refund", { chargeId });
     return { mock: true, chargeId };
   }
 
@@ -351,7 +435,11 @@ export async function initiateMobileMoneyRefund(input: {
   operator: MomoOperator;
 }): Promise<PayChanguInitResult> {
   if (env.paychangu.mock) {
-    console.log("[paychangu] mock momo refund", input.refundChargeId, input.amount, input.mobile);
+    log.info("paychangu", "Mock momo refund", {
+      refundChargeId: input.refundChargeId,
+      amount: input.amount,
+      mobile: input.mobile,
+    });
     return {
       chargeId: input.refundChargeId,
       transId: `mock-ref-${input.refundChargeId}`,
@@ -368,7 +456,11 @@ export async function initiateMobileMoneyRefund(input: {
     charge_id: input.refundChargeId,
   };
 
-  console.log("[paychangu] momo refund", input.refundChargeId, payload.mobile, payload.amount);
+  log.info("paychangu", "Momo refund", {
+    refundChargeId: input.refundChargeId,
+    mobile: payload.mobile,
+    amount: payload.amount,
+  });
 
   const res = await fetch(`${env.paychangu.baseUrl}/mobile-money/payouts/initialize`, {
     method: "POST",

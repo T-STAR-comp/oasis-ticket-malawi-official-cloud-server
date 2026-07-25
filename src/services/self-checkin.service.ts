@@ -258,13 +258,136 @@ export async function performSelfCheckin(
   }
 }
 
+export async function performSelfCheckinForGuest(
+  userTicketId: string,
+  guestEmail: string,
+  gatePayloadRaw: string,
+) {
+  const parsed = parseGatePayload(gatePayloadRaw.trim());
+  if (!parsed) throw new Error("Invalid gate QR code");
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [sessions] = await conn.query<RowDataPacket[]>(
+      `SELECT * FROM self_checkin_sessions WHERE id = :id AND status = 'active' FOR UPDATE`,
+      { id: parsed.sessionId },
+    );
+    const session = sessions[0];
+    if (!session || String(session.gate_token) !== parsed.gateToken) {
+      throw new Error("Self check-in is not active or gate code is invalid");
+    }
+
+    const [tickets] = await conn.query<RowDataPacket[]>(
+      `SELECT ut.*, o.contact_name, o.contact_email, l.title AS listing_title, l.event_format
+       FROM user_tickets ut
+       JOIN orders o ON o.id = ut.order_id
+       JOIN listings l ON l.id = ut.listing_id
+       WHERE ut.id = :ticketId
+         AND o.is_guest = 1
+         AND LOWER(o.contact_email) = :email
+       FOR UPDATE`,
+      { ticketId: userTicketId, email: guestEmail.trim().toLowerCase() },
+    );
+    const ticket = tickets[0];
+    if (!ticket) throw new Error("Ticket not found");
+
+    const holderName = String(ticket.contact_name ?? "Guest");
+    const listingId = String(session.listing_id);
+    const activatedBy = String(session.activated_by_user_id);
+
+    if (String(ticket.event_format ?? "physical") === "virtual") {
+      throw new Error("Self check-in is not available for virtual events.");
+    }
+
+    if (String(ticket.listing_id) !== listingId) {
+      await logSelfCheckinEvent(conn, {
+        sessionId: parsed.sessionId,
+        listingId,
+        userTicketId,
+        holderUserId: null,
+        holderName,
+        reference: String(ticket.reference),
+        result: "rejected",
+        rejectReason: "Ticket is for a different event",
+      });
+      await conn.commit();
+      return { success: false, message: "This ticket is not valid for this gate", ticketStatus: String(ticket.status) };
+    }
+
+    if (ticket.status === "used") {
+      await logSelfCheckinEvent(conn, {
+        sessionId: parsed.sessionId,
+        listingId,
+        userTicketId,
+        holderUserId: null,
+        holderName,
+        reference: String(ticket.reference),
+        result: "rejected",
+        rejectReason: "Ticket already used",
+      });
+      await conn.commit();
+      return { success: false, message: "This ticket has already been used", ticketStatus: "used" };
+    }
+
+    if (ticket.status !== "active") {
+      await conn.commit();
+      return { success: false, message: "This ticket is not active", ticketStatus: String(ticket.status) };
+    }
+
+    await conn.query(
+      `UPDATE user_tickets SET status = 'used', verified_at = NOW() WHERE id = :id`,
+      { id: userTicketId },
+    );
+
+    await conn.query(
+      `INSERT INTO ticket_verifications (
+        id, user_ticket_id, listing_id, verified_by_user_id, method, result, reference
+      ) VALUES (
+        :id, :ticketId, :listingId, :verifiedBy, 'self_checkin', 'accepted', :reference
+      )`,
+      {
+        id: uuid(),
+        ticketId: userTicketId,
+        listingId,
+        verifiedBy: activatedBy,
+        reference: ticket.reference,
+      },
+    );
+
+    await logSelfCheckinEvent(conn, {
+      sessionId: parsed.sessionId,
+      listingId,
+      userTicketId,
+      holderUserId: null,
+      holderName,
+      reference: String(ticket.reference),
+      result: "accepted",
+    });
+
+    await conn.commit();
+    return {
+      success: true,
+      message: "Check-in successful — your ticket is now marked as used.",
+      ticketStatus: "used" as const,
+      ticket: { reference: ticket.reference, listingTitle: ticket.listing_title },
+    };
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
 async function logSelfCheckinEvent(
   conn: Awaited<ReturnType<typeof pool.getConnection>>,
   input: {
     sessionId: string;
     listingId: string;
     userTicketId: string;
-    holderUserId: string;
+    holderUserId: string | null;
     holderName: string;
     reference: string;
     result: "accepted" | "rejected";
