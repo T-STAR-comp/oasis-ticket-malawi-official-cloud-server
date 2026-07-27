@@ -116,13 +116,14 @@ async function attachTicketTiers<T extends Record<string, unknown>>(
   try {
     let tiers = await ticketTiersService.listTiersForListing(row.id);
     if (tiers.length === 0) {
-      const fallbackPrice = Number(row.price_mwk) || Number(listing.price) || 1;
+      const fallbackPrice = Number(row.price_mwk ?? listing.price ?? 0);
       tiers = await ticketTiersService.ensureDefaultTierForListing(row.id, fallbackPrice);
     }
     if (tiers.length > 0) {
+      const paidPrices = tiers.map((t) => t.priceMwk).filter((p) => p > 0);
       return {
         ...listing,
-        price: Math.min(...tiers.map((t) => t.priceMwk)),
+        price: paidPrices.length > 0 ? Math.min(...paidPrices) : 0,
         ticketTiers: tiers,
       };
     }
@@ -641,11 +642,17 @@ export async function upsertListing(organizerId: string, body: Record<string, un
     await saveSeatLayout(id, layout);
   } else {
     try {
+      const tierFallback =
+        kind === "event"
+          ? Math.max(0, Math.floor(priceMwk))
+          : priceMwk > 0
+            ? priceMwk
+            : 1;
       const tiers = await ticketTiersService.saveTiersForListing(
         id,
         kind,
         rawTiers,
-        priceMwk > 0 ? priceMwk : 1,
+        tierFallback,
         eventFormat,
       );
       if (tiers.length > 0) {

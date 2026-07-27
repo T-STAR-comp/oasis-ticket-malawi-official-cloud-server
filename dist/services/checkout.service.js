@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
-import { getGuestPendingLedger, getLedgerByOrderId, getUserPendingLedger, listExpiredPendingLedgers, parseCheckoutMeta, } from "./ledger.service.js";
+import { getGuestPendingLedger, getLedgerById, getLedgerByOrderId, getUserPendingLedger, listExpiredPendingLedgers, parseCheckoutMeta, } from "./ledger.service.js";
 import { assertCheckoutCapacity, assertFulfillmentCapacity, isPurchasableStatus, syncListingSoldOutStatus, } from "./capacity.service.js";
 import { failCheckoutWithRecovery } from "./payment-failure-refund.service.js";
 import { distributeTicketAmountPaid } from "../utils/ticket-amount-paid.js";
@@ -85,7 +85,7 @@ async function resolveCheckoutIdentity(userId, input) {
         nationalId: String(profile.national_id ?? "").trim() || undefined,
     };
 }
-function resolveGuestCheckoutIdentity(input) {
+function resolveGuestCheckoutIdentity(input, options) {
     const contactName = String(input.contactName ?? "").trim();
     const contactEmail = String(input.contactEmail ?? "").trim().toLowerCase();
     const paymentPhone = normalizeMalawiPhone(input.paymentPhone ?? "") ?? undefined;
@@ -94,21 +94,79 @@ function resolveGuestCheckoutIdentity(input) {
     if (!contactEmail || !contactEmail.includes("@")) {
         throw new Error("A valid email is required — your tickets will be sent there.");
     }
-    if (!paymentPhone)
+    if (!options?.freeEvent && !paymentPhone)
         throw new Error("Mobile money number is required");
     return {
         contactName,
         contactEmail,
-        contactPhone: String(input.contactPhone ?? "").trim() || paymentPhone,
-        paymentPhone,
+        contactPhone: String(input.contactPhone ?? "").trim() || paymentPhone || contactEmail,
+        paymentPhone: options?.freeEvent ? undefined : paymentPhone,
         nationalId: String(input.nationalId ?? "").trim() || undefined,
     };
+}
+async function resolveAuthenticatedCheckoutInput(userId, input, freeEventCheckout) {
+    if (freeEventCheckout) {
+        const profile = await getProfile(userId);
+        if (!profile)
+            throw new Error("Account not found");
+        const fullName = String(profile.full_name ?? "").trim();
+        const email = String(profile.email ?? "").trim();
+        if (!fullName) {
+            throw new Error("Your account is missing a name. Update your profile in Dashboard → Account.");
+        }
+        if (!email) {
+            throw new Error("Your account is missing an email. Update your profile in Dashboard → Account.");
+        }
+        return {
+            ...input,
+            contactName: fullName,
+            contactEmail: email,
+            contactPhone: String(profile.phone ?? "").trim() || email,
+            paymentPhone: undefined,
+            nationalId: String(profile.national_id ?? "").trim() || undefined,
+        };
+    }
+    return { ...input, ...(await resolveCheckoutIdentity(userId, input)) };
+}
+async function isFreeEventCheckoutTotal(listing, lineCount, unitPrice, listingId, referralCode) {
+    if (listing.kind !== "event")
+        return false;
+    if (unitPrice <= 0)
+        return true;
+    const pricing = await pricingForCheckout(lineCount, unitPrice, listingId, listing.organizerId, referralCode);
+    return pricing.catalogSubtotal <= 0 && pricing.total <= 0;
+}
+function isFreeEventCheckoutPricing(listing, unitPrice, pricing) {
+    return (listing.kind === "event" &&
+        (unitPrice <= 0 || (pricing.catalogSubtotal <= 0 && pricing.total <= 0)));
+}
+/** Finalize a zero-amount event checkout without PayChangu verification. */
+export async function fulfillFreeEventCheckout(ledger, options) {
+    if (!features.ticketGeneration && !options?.bypassTicketGenerationGate) {
+        throw new Error("Ticket generation is temporarily unavailable.");
+    }
+    const result = await fulfillCheckout(ledger, {
+        freeEvent: ledger.status === "completed",
+        bypassTicketGenerationGate: options?.bypassTicketGenerationGate,
+    });
+    const [countRows] = await pool.query(`SELECT COUNT(*) AS cnt FROM user_tickets WHERE order_id = :orderId`, { orderId: ledger.order_id });
+    const ticketCount = Number(countRows[0]?.cnt ?? 0);
+    const issued = ticketCount > 0 ||
+        (Array.isArray(result) && result.length > 0) ||
+        (result &&
+            typeof result === "object" &&
+            "ticketIds" in result &&
+            Array.isArray(result.ticketIds) &&
+            result.ticketIds.length > 0);
+    if (!issued) {
+        throw new Error("Could not issue free event tickets");
+    }
 }
 async function pricingForCheckout(lineCount, unitPrice, listingId, organizerId, referralCode) {
     const catalogSubtotal = unitPrice * lineCount;
     const feeResolved = await resolveCheckoutServiceFee(organizerId, catalogSubtotal);
     const catalogServiceFee = feeResolved.fee;
-    const mockTotal = env.paychangu.mock ? env.paychangu.mockPaymentAmountMwk : null;
+    const mockTotal = catalogSubtotal > 0 && env.paychangu.mock ? env.paychangu.mockPaymentAmountMwk : null;
     const referral = await resolveActiveReferral(listingId, referralCode);
     if (referral) {
         const applied = computeReferralPricing({
@@ -248,13 +306,38 @@ export async function previewListingCheckoutPricing(listingId, input) {
         buyerPaysServiceFee: pricing.serviceFeeBearer === "buyer",
     };
 }
+export async function isFreeListingCheckout(listingId, input) {
+    const preview = await previewListingCheckoutPricing(listingId, input);
+    return preview.unitPrice <= 0 && preview.total <= 0;
+}
+/** Block repeat purchases when this buyer already received free tickets for the event. */
+async function assertBuyerHasNoPriorFreeEventTickets(listingId, contactEmail, userId, conn) {
+    const email = String(contactEmail ?? "").trim().toLowerCase();
+    if (!email && !userId)
+        return;
+    const executor = conn ?? pool;
+    const [rows] = await executor.query(`SELECT 1
+     FROM orders o
+     LEFT JOIN user_tickets ut ON ut.order_id = o.id
+     WHERE o.listing_id = :listingId
+       AND o.total_mwk = 0
+       AND o.status IN ('confirmed', 'pending')
+       AND (
+         (:email != '' AND LOWER(o.contact_email) = :email)
+         OR (:email != '' AND LOWER(COALESCE(ut.guest_email, '')) = :email)
+         OR (:userId IS NOT NULL AND o.user_id = :userId)
+         OR (:userId IS NOT NULL AND ut.user_id = :userId)
+       )
+     LIMIT 1`, { listingId, email, userId: userId ?? null });
+    if (rows.length > 0) {
+        throw new Error("This email has already claimed free tickets for this event. Additional tickets cannot be purchased.");
+    }
+}
 export async function initiateCheckout(userId, listingId, input) {
     await failStalePendingPayments();
     if (input.paymentMethod === "card") {
         throw new Error("Card payments via PayChangu are not enabled yet. Use Airtel or TNM.");
     }
-    const identity = await resolveCheckoutIdentity(userId, input);
-    const checkoutInput = { ...input, ...identity };
     const listing = await getListingById(listingId, true);
     if (!listing)
         throw new Error("Listing not found");
@@ -310,6 +393,11 @@ export async function initiateCheckout(userId, listingId, input) {
     }
     await assertCheckoutCapacity(listingId, listing.kind, listing.ticketCapacity ?? null, lineCount);
     await assertQueueCheckoutAllowed(listingId, { userId }, input.queueId, listing.kind, listing.ticketCapacity ?? null);
+    const freeEventCheckout = await isFreeEventCheckoutTotal(listing, lineCount, unitPrice, listingId, input.referralCode);
+    const checkoutInput = await resolveAuthenticatedCheckoutInput(userId, input, freeEventCheckout);
+    if (listing.kind === "event") {
+        await assertBuyerHasNoPriorFreeEventTickets(listingId, checkoutInput.contactEmail, userId);
+    }
     const lockKey = `checkout:${userId}`;
     const conn = await pool.getConnection();
     try {
@@ -341,8 +429,6 @@ export async function initiateGuestCheckout(listingId, input, guestKey) {
     if (input.paymentMethodId || input.savePaymentMethod) {
         throw new Error("Saved payment methods require an account. Sign in or use guest checkout.");
     }
-    const identity = resolveGuestCheckoutIdentity(input);
-    const checkoutInput = { ...input, ...identity };
     const listing = await getListingById(listingId, true);
     if (!listing)
         throw new Error("Listing not found");
@@ -399,6 +485,14 @@ export async function initiateGuestCheckout(listingId, input, guestKey) {
     }
     await assertCheckoutCapacity(listingId, listing.kind, listing.ticketCapacity ?? null, lineCount);
     await assertQueueCheckoutAllowed(listingId, { guestKey }, input.queueId, listing.kind, listing.ticketCapacity ?? null);
+    const freeEventCheckout = await isFreeEventCheckoutTotal(listing, lineCount, unitPrice, listingId, input.referralCode);
+    const checkoutInput = {
+        ...input,
+        ...resolveGuestCheckoutIdentity(input, { freeEvent: freeEventCheckout }),
+    };
+    if (listing.kind === "event") {
+        await assertBuyerHasNoPriorFreeEventTickets(listingId, checkoutInput.contactEmail, null);
+    }
     const lockKey = `checkout:guest:${guestKey.slice(0, 32)}`;
     const conn = await pool.getConnection();
     try {
@@ -427,12 +521,15 @@ export async function initiateGuestCheckout(listingId, input, guestKey) {
 }
 async function createCheckoutWithPayChangu(userId, listingId, listing, input, conn, unitPrice, selectedTier, lineCount, virtualSessionIds, enrollAllVirtualSessions, guestOptions) {
     const pricing = await pricingForCheckout(lineCount, unitPrice, listingId, listing.organizerId, input.referralCode);
-    const { subtotal, serviceFee, total, serviceFeePercent, serviceFeeBearer, } = pricing;
+    const isFreeEvent = isFreeEventCheckoutPricing(listing, unitPrice, pricing);
+    const { subtotal, serviceFee, total: pricedTotal, serviceFeePercent, serviceFeeBearer, } = pricing;
+    const total = isFreeEvent ? 0 : pricedTotal;
     const orderId = uuid();
     const ledgerId = uuid();
     const reference = makeReference(listingId);
     const chargeId = makeChargeId(ledgerId);
-    if (!env.paychangu.mock && !env.paychangu.apiKey) {
+    const paidCheckout = !isFreeEvent && (total > 0 || listing.kind !== "event");
+    if (paidCheckout && !env.paychangu.mock && !env.paychangu.apiKey) {
         throw new Error("PayChangu API key is not configured");
     }
     const checkoutMeta = {
@@ -484,6 +581,9 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
     const timeoutSec = env.paychangu.pendingTimeoutSec;
     try {
         await conn.beginTransaction();
+        if (listing.kind === "event") {
+            await assertBuyerHasNoPriorFreeEventTickets(listingId, input.contactEmail, userId, conn);
+        }
         if (listing.kind === "travel" && input.seatNumbers?.length) {
             for (const num of input.seatNumbers) {
                 const [seatRows] = await conn.query(`SELECT s.id, s.status FROM seats s
@@ -541,7 +641,8 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
       ) VALUES (
         :ledgerId, :userId, :orderId, 'pending', :chargeId,
         :amount, :paymentMethod, :paymentPhone, :accountName, :accountEmail, :accountPhone,
-        :checkoutMeta, 'initiated', DATE_ADD(NOW(), INTERVAL ${timeoutSec} SECOND)
+        :checkoutMeta, :providerStatus,
+        DATE_ADD(NOW(), INTERVAL ${timeoutSec} SECOND)
       )`, {
             ledgerId,
             userId,
@@ -554,6 +655,7 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
             accountEmail: input.contactEmail,
             accountPhone: input.contactPhone,
             checkoutMeta: JSON.stringify(checkoutMeta),
+            providerStatus: isFreeEvent ? "free" : "initiated",
         });
         await conn.commit();
         log.info("checkout", "Order and payment ledger created", {
@@ -574,6 +676,26 @@ async function createCheckoutWithPayChangu(userId, listingId, listing, input, co
             isGuest: Boolean(guestOptions?.isGuest),
         });
         throw err;
+    }
+    if (isFreeEvent) {
+        const ledgerRow = await getLedgerById(ledgerId);
+        if (!ledgerRow)
+            throw new Error("Payment record not found");
+        await fulfillFreeEventCheckout(ledgerRow);
+        return {
+            orderId,
+            ledgerId,
+            reference,
+            total: 0,
+            listingTitle: listing.title,
+            paymentStatus: "completed",
+            paychanguChargeId: chargeId,
+            mockPayment: false,
+            guestAccessToken: guestOptions?.guestAccessToken,
+            isGuest: Boolean(guestOptions?.isGuest),
+            buyerEmail: input.contactEmail,
+            message: "Your free tickets are ready.",
+        };
     }
     let init;
     try {
@@ -701,6 +823,22 @@ export async function processPendingLedgerEntry(ledgerId) {
     const row = rows[0];
     if (!row)
         return;
+    if (Number(row.amount_mwk) <= 0) {
+        try {
+            await fulfillFreeEventCheckout(row);
+            log.info("checkout", "Free event checkout fulfilled without PayChangu", {
+                ledgerId: row.id,
+                orderId: row.order_id,
+            });
+        }
+        catch (err) {
+            log.error("checkout", "Free event fulfillment failed", err, {
+                ledgerId: row.id,
+                orderId: row.order_id,
+            });
+        }
+        return;
+    }
     await pool.query(`UPDATE payment_ledger SET last_polled_at = NOW(), poll_count = poll_count + 1 WHERE id = :ledgerId`, { ledgerId });
     const ageMs = Number(row.age_sec) * 1000;
     const inGrace = ageMs < env.paychangu.verifyGraceMs;
@@ -799,7 +937,7 @@ export async function fulfillCheckout(ledger, options) {
     const conn = await pool.getConnection();
     try {
         await conn.beginTransaction();
-        const ledgerStatusSql = options?.recovery
+        const ledgerStatusSql = options?.recovery || options?.freeEvent
             ? `SELECT * FROM payment_ledger WHERE id = :ledgerId AND status IN ('pending', 'failed', 'completed') FOR UPDATE`
             : `SELECT * FROM payment_ledger WHERE id = :ledgerId AND status = 'pending' FOR UPDATE`;
         const [ledgerRows] = await conn.query(ledgerStatusSql, {
@@ -808,19 +946,32 @@ export async function fulfillCheckout(ledger, options) {
         const lockedLedger = ledgerRows[0];
         if (!lockedLedger) {
             await conn.rollback();
+            if (options?.freeEvent) {
+                throw new Error("Free event payment record is not in a fulfillable state");
+            }
             return;
         }
         const [orderRows] = await conn.query(`SELECT * FROM orders WHERE id = :orderId FOR UPDATE`, { orderId: ledger.order_id });
         const order = orderRows[0];
         if (!order) {
             await conn.rollback();
+            if (options?.freeEvent) {
+                throw new Error("Order not found for free event fulfillment");
+            }
             return;
         }
-        if (order.status === "confirmed" && !options?.recovery) {
+        if (order.status === "confirmed" && !options?.recovery && !options?.freeEvent) {
             await conn.rollback();
             return;
         }
-        if (options?.recovery) {
+        if (options?.freeEvent) {
+            const [ticketCountRows] = await conn.query(`SELECT COUNT(*) AS cnt FROM user_tickets WHERE order_id = :orderId`, { orderId: ledger.order_id });
+            if (Number(ticketCountRows[0]?.cnt ?? 0) > 0) {
+                await conn.rollback();
+                return [];
+            }
+        }
+        else if (options?.recovery) {
             const [ticketCountRows] = await conn.query(`SELECT COUNT(*) AS cnt FROM user_tickets WHERE order_id = :orderId`, { orderId: ledger.order_id });
             const existingTickets = Number(ticketCountRows[0]?.cnt ?? 0);
             if (existingTickets > 0) {
@@ -997,8 +1148,10 @@ export async function fulfillCheckout(ledger, options) {
             }
         }
         await conn.query(`UPDATE orders SET status = 'confirmed' WHERE id = :orderId`, { orderId: ledger.order_id });
-        await conn.query(`UPDATE payment_ledger SET status = 'completed', completed_at = NOW(), provider_status = 'success'
-       WHERE id = :ledgerId`, { ledgerId: ledger.id });
+        const freeProviderStatus = orderTotalCharged <= 0 && listing.kind === "event" ? "free" : "success";
+        await conn.query(`UPDATE payment_ledger
+       SET status = 'completed', completed_at = NOW(), provider_status = :providerStatus
+       WHERE id = :ledgerId`, { ledgerId: ledger.id, providerStatus: freeProviderStatus });
         await conn.commit();
         if (listingForSideEffects) {
             await runPostCheckoutSideEffects(ledger, listingForSideEffects, listingId, {

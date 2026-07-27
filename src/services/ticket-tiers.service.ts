@@ -99,7 +99,7 @@ export async function ensureDefaultTierForListing(
   if (existing.length > 0) return existing;
 
   const id = uuid();
-  const price = Math.max(1, Math.floor(priceMwk));
+  const price = Math.max(0, Math.floor(priceMwk));
   await pool.query(
     `INSERT INTO listing_ticket_tiers (
        id, listing_id, name, description, price_mwk, capacity, sort_order
@@ -223,8 +223,8 @@ export async function saveTiersForListing(
 
   for (const tier of normalized) {
     if (!tier.name.trim()) throw new Error("Each ticket type needs a name");
-    if (!Number.isFinite(tier.priceMwk) || tier.priceMwk <= 0) {
-      throw new Error(`Ticket type "${tier.name}" needs a price greater than zero`);
+    if (!Number.isFinite(tier.priceMwk) || tier.priceMwk < 0) {
+      throw new Error(`Ticket type "${tier.name}" needs a valid price`);
     }
   }
 

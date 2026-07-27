@@ -6,7 +6,6 @@ import * as queueService from "../services/queue.service.js";
 import { PayChanguError } from "../services/paychangu.service.js";
 import { requireAuth, type AuthedRequest } from "../middleware/auth.js";
 import { optionalAuth } from "../middleware/optionalAuth.js";
-import { requireFeature } from "../middleware/features.js";
 import { features } from "../config/features.js";
 import * as referralService from "../services/referral.service.js";
 import { fail, ok } from "../utils/http.js";
@@ -79,6 +78,7 @@ function checkoutError(err: unknown, res: import("express").Response, next: impo
       return fail(res, err.message, 409);
     }
     if (err.message.includes("not available for purchase")) return fail(res, err.message, 409);
+    if (err.message.includes("already claimed free tickets")) return fail(res, err.message, 409);
     if (err.message.includes("required") || err.message.includes("not enabled")) {
       return fail(res, err.message, 400);
     }
@@ -191,9 +191,34 @@ checkoutRouter.get("/queue/:queueId", optionalAuth, async (req, res, next) => {
   }
 });
 
+async function requirePaymentsUnlessFreeListing(
+  req: import("express").Request,
+  res: import("express").Response,
+  next: import("express").NextFunction,
+) {
+  if (features.payments) return next();
+  try {
+    const listingId = String(req.params.listingId);
+    const parsed = checkoutSchema.safeParse(req.body);
+    if (!parsed.success) return next();
+    const seatNumbers = parsed.data.seatNumbers;
+    const isFree = await checkoutService.isFreeListingCheckout(listingId, {
+      qty: parsed.data.qty,
+      seatNumbers,
+      tierId: parsed.data.tierId,
+      referralCode: parsed.data.referralCode,
+      virtualSessionIds: parsed.data.virtualSessionIds,
+    });
+    if (isFree) return next();
+  } catch {
+    return next();
+  }
+  return fail(res, "Checkout and payments are temporarily unavailable.", 503);
+}
+
 checkoutRouter.post(
   "/:listingId",
-  requireFeature("payments"),
+  requirePaymentsUnlessFreeListing,
   optionalAuth,
   async (req, res, next) => {
     try {

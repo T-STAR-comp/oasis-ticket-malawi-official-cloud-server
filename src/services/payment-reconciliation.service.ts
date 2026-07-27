@@ -1,7 +1,7 @@
 import type { RowDataPacket } from "mysql2";
 import { env } from "../config/env.js";
 import { pool } from "../db/pool.js";
-import { fulfillCheckout } from "./checkout.service.js";
+import { fulfillCheckout, fulfillFreeEventCheckout } from "./checkout.service.js";
 import {
   getLedgerById,
   parseCheckoutMeta,
@@ -81,6 +81,27 @@ export async function attemptPaymentRecovery(
   const ticketCount = await countFulfillmentTickets(ledger);
   if (ticketCount > 0) {
     return { status: "already_fulfilled", ticketCount };
+  }
+
+  if (Number(ledger.amount_mwk) <= 0) {
+    try {
+      await fulfillFreeEventCheckout(ledger, {
+        bypassTicketGenerationGate: options?.source === "admin",
+      });
+      const afterCount = await countFulfillmentTickets(ledger);
+      if (afterCount === 0) {
+        return { status: "fulfill_failed", error: "Fulfillment completed without creating tickets" };
+      }
+      log.info("payment-reconciliation", "Recovered free event tickets for ledger", {
+        ledgerId,
+        source: options?.source ?? "unknown",
+      });
+      return { status: "fulfilled", ticketIds: [] };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not finalize free event tickets";
+      log.error("payment-reconciliation", "Free event recovery failed for ledger", err, { ledgerId });
+      return { status: "fulfill_failed", error: message };
+    }
   }
 
   if (!options?.skipPaychanguVerify) {

@@ -31,17 +31,10 @@ export function computeSelectedSessionsSubtotal(input: {
   }
 
   if (input.pricingMode === "per_session") {
-    const total = selected.reduce((sum, s) => sum + Math.max(0, Number(s.price_mwk ?? 0)), 0);
-    if (total <= 0) {
-      throw new Error("Selected sessions must have a price greater than zero.");
-    }
-    return total;
+    return selected.reduce((sum, s) => sum + Math.max(0, Number(s.price_mwk ?? 0)), 0);
   }
 
   const unit = computeUniformSessionUnitPrice(input.tierPriceMwk, activeSessions.length);
-  if (unit <= 0) {
-    throw new Error("Set a ticket price greater than zero for this virtual event.");
-  }
   return unit * selected.length;
 }
 
