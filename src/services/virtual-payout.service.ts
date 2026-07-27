@@ -6,6 +6,8 @@ import {
   isVirtualListingFormat,
 } from "../utils/virtual-events.js";
 
+import { WITHDRAWABLE_EPOCH_WHERE } from "../utils/settlement-epoch.js";
+
 const PAYMENT_COMPLETED_AT = `COALESCE(pl.completed_at, o.updated_at, o.created_at)`;
 
 /** SQL fragment: listing is virtual and payout not yet admin-verified. */
@@ -28,6 +30,7 @@ export async function getOrganizerVirtualPayoutHold(organizerId: string): Promis
        AND o.status = 'confirmed'
        AND l.status != 'cancelled'
        AND ${UNVERIFIED_VIRTUAL_PAYOUT_WHERE}
+       AND ${WITHDRAWABLE_EPOCH_WHERE}
        AND CURDATE() > DATE(${PAYMENT_COMPLETED_AT})`,
     { organizerId },
   );

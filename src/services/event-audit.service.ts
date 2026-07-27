@@ -1,6 +1,5 @@
 import type { RowDataPacket } from "mysql2";
 import { pool } from "../db/pool.js";
-import { SETTLEMENT_EPOCH_DATE } from "../utils/settlement-epoch.js";
 import { getOrganizerSettlementBalances } from "./settlement.service.js";
 
 export type AuditTimelineEntry = {
@@ -23,7 +22,6 @@ export type AuditTimelineEntry = {
 
 export type OrganizerAuditSnapshot = {
   generatedAt: string;
-  settlementEpochDate: string;
   settlement: Awaited<ReturnType<typeof getOrganizerSettlementBalances>>;
   summary: {
     grossRevenue: number;
@@ -401,7 +399,6 @@ export async function getOrganizerAudit(organizerId: string): Promise<OrganizerA
 
   return {
     generatedAt: new Date().toISOString(),
-    settlementEpochDate: SETTLEMENT_EPOCH_DATE,
     settlement,
     summary: {
       grossRevenue: Number(summaryRows[0]?.grossRevenue ?? 0),

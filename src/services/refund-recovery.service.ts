@@ -7,8 +7,7 @@ import {
   refundPaymentMethodLabel,
 } from "./refund-payment.service.js";
 import { EXCLUDE_RESALE_ORDERS_SQL } from "../utils/settlement-filters.js";
-
-const PAYMENT_COMPLETED_AT = `COALESCE(pl.completed_at, o.updated_at, o.created_at)`;
+import { PAYMENT_COMPLETED_AT, WITHDRAWABLE_EPOCH_WHERE } from "../utils/settlement-epoch.js";
 
 export type RefundDebtSummary = {
   refundDebt: number;
@@ -44,9 +43,13 @@ export async function getOrganizerRefundDebtSummary(
 
 export async function getSalesRecoveredFromSettledSales(organizerId: string): Promise<number> {
   const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT COALESCE(SUM(amount_mwk), 0) AS total
-     FROM refund_recovery_allocations
-     WHERE organizer_id = :organizerId AND source = 'settled_sale'`,
+    `SELECT COALESCE(SUM(rra.amount_mwk), 0) AS total
+     FROM refund_recovery_allocations rra
+     JOIN orders o ON o.id = rra.order_id
+     JOIN payment_ledger pl ON pl.order_id = o.id AND pl.status = 'completed'
+     WHERE rra.organizer_id = :organizerId
+       AND rra.source = 'settled_sale'
+       AND ${WITHDRAWABLE_EPOCH_WHERE}`,
     { organizerId },
   );
   return Number(rows[0]?.total ?? 0);
