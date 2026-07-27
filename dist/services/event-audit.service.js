@@ -1,5 +1,4 @@
 import { pool } from "../db/pool.js";
-import { SETTLEMENT_EPOCH_DATE } from "../utils/settlement-epoch.js";
 import { getOrganizerSettlementBalances } from "./settlement.service.js";
 function dayKey(value) {
     const d = value instanceof Date ? value : new Date(value);
@@ -244,7 +243,6 @@ export async function getOrganizerAudit(organizerId) {
     timeline.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
     return {
         generatedAt: new Date().toISOString(),
-        settlementEpochDate: SETTLEMENT_EPOCH_DATE,
         settlement,
         summary: {
             grossRevenue: Number(summaryRows[0]?.grossRevenue ?? 0),

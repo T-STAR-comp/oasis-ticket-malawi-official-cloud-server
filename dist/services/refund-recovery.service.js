@@ -3,7 +3,7 @@ import { pool } from "../db/pool.js";
 import * as emailService from "./email.service.js";
 import { executeCustomerRefundPayment, refundPaymentMethodLabel, } from "./refund-payment.service.js";
 import { EXCLUDE_RESALE_ORDERS_SQL } from "../utils/settlement-filters.js";
-const PAYMENT_COMPLETED_AT = `COALESCE(pl.completed_at, o.updated_at, o.created_at)`;
+import { PAYMENT_COMPLETED_AT, WITHDRAWABLE_EPOCH_WHERE } from "../utils/settlement-epoch.js";
 export async function getOrganizerRefundDebtSummary(organizerId) {
     const [rows] = await pool.query(`SELECT refund_debt_mwk, refund_recovered_mwk FROM organizer_profiles WHERE user_id = :organizerId`, { organizerId });
     const row = rows[0];
@@ -19,9 +19,13 @@ export async function getOrganizerRefundDebtSummary(organizerId) {
     };
 }
 export async function getSalesRecoveredFromSettledSales(organizerId) {
-    const [rows] = await pool.query(`SELECT COALESCE(SUM(amount_mwk), 0) AS total
-     FROM refund_recovery_allocations
-     WHERE organizer_id = :organizerId AND source = 'settled_sale'`, { organizerId });
+    const [rows] = await pool.query(`SELECT COALESCE(SUM(rra.amount_mwk), 0) AS total
+     FROM refund_recovery_allocations rra
+     JOIN orders o ON o.id = rra.order_id
+     JOIN payment_ledger pl ON pl.order_id = o.id AND pl.status = 'completed'
+     WHERE rra.organizer_id = :organizerId
+       AND rra.source = 'settled_sale'
+       AND ${WITHDRAWABLE_EPOCH_WHERE}`, { organizerId });
     return Number(rows[0]?.total ?? 0);
 }
 export async function addOrganizerRefundDebt(organizerId, amount) {
