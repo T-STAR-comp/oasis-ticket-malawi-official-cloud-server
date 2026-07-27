@@ -7,6 +7,7 @@ import { startPaymentReconciliationPoller } from "./services/payment-reconciliat
 import { startPayoutReconciliationPoller } from "./services/payout-reconciliation.service.js";
 import { logFeatureFlags } from "./config/features.js";
 import { startReminderPoller } from "./services/reminder.service.js";
+import { startEventAuditPoller } from "./services/event-audit-delivery.service.js";
 import { startTicketExpiryPoller } from "./services/ticket-expiry.service.js";
 import { settleResellSales } from "./services/resell.service.js";
 import { log } from "./utils/logger.js";
@@ -37,6 +38,7 @@ async function start() {
         startPaymentReconciliationPoller();
         startPayoutReconciliationPoller();
         startReminderPoller();
+        startEventAuditPoller();
         startTicketExpiryPoller();
         setInterval(() => void settleResellSales(), 60 * 60 * 1000);
         void settleResellSales();

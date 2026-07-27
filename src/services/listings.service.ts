@@ -568,7 +568,9 @@ export async function upsertListing(organizerId: string, body: Record<string, un
 
   const eventLayoutRaw = body.eventLayout as Record<string, unknown> | undefined;
   const eventLayoutJson =
-    kind === "event" && eventLayoutRaw?.enabled ? JSON.stringify(eventLayoutRaw) : null;
+    kind === "event" && eventFormat !== "virtual" && eventLayoutRaw?.enabled
+      ? JSON.stringify(eventLayoutRaw)
+      : null;
 
   await pool.query(
     `INSERT INTO listings (

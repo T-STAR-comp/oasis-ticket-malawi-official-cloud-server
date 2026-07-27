@@ -88,6 +88,10 @@ export const env = {
             }
         })(),
     },
+    settlement: {
+        /** Sales before this date are excluded from withdrawable balances (YYYY-MM-DD). */
+        epochDate: process.env.SETTLEMENT_EPOCH_DATE ?? "2026-07-25",
+    },
     images: {
         /** Absolute or server-relative path to image-bucket-folder (sibling of app on cPanel). */
         bucketDir: process.env.IMAGE_BUCKET_DIR ??

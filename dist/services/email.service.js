@@ -313,6 +313,11 @@ export async function sendTicketPurchaseEmail(input) {
        ${guestLine}
        <p>Bring your QR code (in the PDF or on your phone) to the gate or boarding point.</p>`), input.attachments);
 }
+export async function sendEventAuditReportEmail(input) {
+    return sendEmail(input.email, `Event audit report — ${input.listingTitle}`, wrapHtml("Event financial audit report", `<p>Hi ${input.companyName},</p>
+       <p>Your event <strong>${input.listingTitle}</strong> (${input.eventDateLabel}) has started. Attached is the official financial audit report covering ticket sales, payments, and refunds for this event.</p>
+       <p>This report was prepared by the Oasis Technology and Capital Finance Audit Office.</p>`), input.attachments);
+}
 export async function sendDelayedTicketApologyEmail(input) {
     const guestLine = input.guestTicketsUrl
         ? `<p>Look them up anytime at <a href="${input.guestTicketsUrl}">Guest tickets</a>.</p>`

@@ -428,7 +428,9 @@ export async function upsertListing(organizerId, body) {
     const routeTo = body.route?.to ?? null;
     assertListingLocation(kind, status, location, routeFrom, routeTo, eventFormat);
     const eventLayoutRaw = body.eventLayout;
-    const eventLayoutJson = kind === "event" && eventLayoutRaw?.enabled ? JSON.stringify(eventLayoutRaw) : null;
+    const eventLayoutJson = kind === "event" && eventFormat !== "virtual" && eventLayoutRaw?.enabled
+        ? JSON.stringify(eventLayoutRaw)
+        : null;
     await pool.query(`INSERT INTO listings (
       id, organizer_id, kind, event_format, virtual_event_type, virtual_buy_mode, virtual_pricing_mode, title, subtitle, category, date_label, event_starts_on, ticket_capacity, event_layout_json,
       time_label, location, virtual_meeting_url, virtual_duration_minutes,

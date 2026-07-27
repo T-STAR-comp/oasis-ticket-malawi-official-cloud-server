@@ -698,6 +698,26 @@ export async function sendTicketPurchaseEmail(input: {
   );
 }
 
+export async function sendEventAuditReportEmail(input: {
+  email: string;
+  companyName: string;
+  listingTitle: string;
+  eventDateLabel: string;
+  attachments: Array<{ filename: string; content: Buffer }>;
+}) {
+  return sendEmail(
+    input.email,
+    `Event audit report — ${input.listingTitle}`,
+    wrapHtml(
+      "Event financial audit report",
+      `<p>Hi ${input.companyName},</p>
+       <p>Your event <strong>${input.listingTitle}</strong> (${input.eventDateLabel}) has started. Attached is the official financial audit report covering ticket sales, payments, and refunds for this event.</p>
+       <p>This report was prepared by the Oasis Technology and Capital Finance Audit Office.</p>`,
+    ),
+    input.attachments,
+  );
+}
+
 export async function sendDelayedTicketApologyEmail(input: {
   email: string;
   buyerName: string;

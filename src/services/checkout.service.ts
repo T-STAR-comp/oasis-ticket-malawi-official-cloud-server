@@ -530,6 +530,14 @@ export async function initiateGuestCheckout(
   if (!isPurchasableStatus(String(listing.eventStatus ?? "draft"))) {
     throw new Error("This listing is not available for purchase.");
   }
+  if (
+    listing.kind === "event" &&
+    String(listing.eventFormat ?? "physical") === "virtual"
+  ) {
+    throw new Error(
+      "Virtual events require a Ticket Malawi account. Please sign in to purchase tickets.",
+    );
+  }
 
   const lineCountBase = resolveSeatBasedLineCount(listing, input.qty, input.seatNumbers);
 

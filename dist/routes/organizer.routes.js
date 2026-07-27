@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import * as financeService from "../services/finance.service.js";
+import * as eventAuditService from "../services/event-audit.service.js";
 import * as payoutService from "../services/payout.service.js";
 import * as organizerService from "../services/organizer.service.js";
 import * as listingsService from "../services/listings.service.js";
@@ -223,6 +224,15 @@ organizerRouter.get("/finance", async (req, res, next) => {
     try {
         const user = req.user;
         return ok(res, await financeService.getOrganizerFinance(user.id));
+    }
+    catch (err) {
+        next(err);
+    }
+});
+organizerRouter.get("/audit", async (req, res, next) => {
+    try {
+        const user = req.user;
+        return ok(res, await eventAuditService.getOrganizerAudit(user.id));
     }
     catch (err) {
         next(err);

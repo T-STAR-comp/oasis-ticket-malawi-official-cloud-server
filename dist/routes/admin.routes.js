@@ -9,6 +9,8 @@ import * as virtualPayoutService from "../services/virtual-payout.service.js";
 import * as platformSettingsService from "../services/platform-settings.service.js";
 import * as adminInformationService from "../services/admin-information.service.js";
 import * as adminPaymentsService from "../services/admin-payments.service.js";
+import * as eventAuditService from "../services/event-audit.service.js";
+import { sendEventAuditReport } from "../services/event-audit-delivery.service.js";
 import { reconcileAllProcessingPayouts } from "../services/payout-reconciliation.service.js";
 import { requireAuth, requireRole, signToken } from "../middleware/auth.js";
 import { fail, ok } from "../utils/http.js";
@@ -410,6 +412,40 @@ adminRouter.post("/virtual-events/:listingId/verify-payout", async (req, res, ne
     catch (err) {
         if (err instanceof Error) {
             if (err.message === "Virtual event not found")
+                return fail(res, err.message, 404);
+            return fail(res, err.message, 400);
+        }
+        next(err);
+    }
+});
+adminRouter.get("/event-audits", async (req, res, next) => {
+    try {
+        const search = typeof req.query.q === "string" ? req.query.q : undefined;
+        return ok(res, await eventAuditService.listEventsForAdminAudit(search));
+    }
+    catch (err) {
+        next(err);
+    }
+});
+adminRouter.post("/listings/:listingId/audit-report", async (req, res, next) => {
+    try {
+        const admin = req.user;
+        const body = z
+            .object({ recipientEmail: z.string().email().optional() })
+            .parse(req.body ?? {});
+        const result = await sendEventAuditReport({
+            listingId: req.params.listingId,
+            triggerKind: "manual",
+            triggeredBy: admin.id,
+            recipientEmail: body.recipientEmail,
+        });
+        return ok(res, result);
+    }
+    catch (err) {
+        if (err instanceof z.ZodError)
+            return fail(res, "Invalid email address", 400);
+        if (err instanceof Error) {
+            if (err.message === "Event not found")
                 return fail(res, err.message, 404);
             return fail(res, err.message, 400);
         }

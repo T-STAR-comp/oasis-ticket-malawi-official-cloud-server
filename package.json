@@ -39,6 +39,7 @@
     "db:migrate:service-fee-settings": "node scripts/run-sql.js database/migration-v23-service-fee-settings.sql",
     "db:migrate:guest-checkout": "node scripts/run-sql.js database/migration-v24-guest-checkout.sql",
     "db:migrate:event-layout": "node scripts/run-sql.js database/migration-v25-event-layout.sql",
+    "db:migrate:event-audit": "node scripts/run-sql.js database/migration-v26-event-audit-reports.sql",
     "photos:optimize": "node scripts/optimize-marketing-photos.mjs"
   },
   "dependencies": {
