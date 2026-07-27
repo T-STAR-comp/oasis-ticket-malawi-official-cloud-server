@@ -93,6 +93,161 @@ function dayKey(value: string | Date): string {
   return d.toISOString().slice(0, 10);
 }
 
+function isMissingSchemaError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const message = String(
+    ("sqlMessage" in err && err.sqlMessage) ||
+      ("message" in err && err.message) ||
+      "",
+  );
+  return (
+    message.includes("doesn't exist") ||
+    message.includes("Unknown table") ||
+    message.includes("Unknown column")
+  );
+}
+
+async function safeAuditQuery<T>(run: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (isMissingSchemaError(err)) return fallback;
+    throw err;
+  }
+}
+
+async function fetchMonthlyPayouts(organizerId: string) {
+  return safeAuditQuery(async () => {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT DATE_FORMAT(requested_at, '%Y-%m') AS month,
+         COALESCE(SUM(amount_mwk), 0) AS amount
+       FROM organizer_payouts
+       WHERE organizer_id = :organizerId AND status = 'completed'
+       GROUP BY DATE_FORMAT(requested_at, '%Y-%m')
+       ORDER BY month ASC`,
+      { organizerId },
+    );
+    return rows;
+  }, []);
+}
+
+async function resolveOrganizerContact(
+  organizerId: string,
+): Promise<{ companyName: string; email: string }> {
+  const contact = await tryResolveOrganizerContact(organizerId);
+  if (!contact) throw new Error("Organizer email not found");
+  return contact;
+}
+
+export async function tryResolveOrganizerContact(
+  organizerId: string,
+): Promise<{ companyName: string; email: string } | null> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT u.email AS user_email,
+       u.full_name,
+       op.company_name,
+       (
+         SELECT pa.contact_email
+         FROM partner_applications pa
+         WHERE LOWER(pa.contact_email) = LOWER(u.email)
+         ORDER BY pa.created_at DESC
+         LIMIT 1
+       ) AS partner_email
+     FROM users u
+     LEFT JOIN organizer_profiles op ON op.user_id = u.id
+     WHERE u.id = :organizerId`,
+    { organizerId },
+  );
+  const row = rows[0];
+  if (!row) return null;
+
+  const email = String(row.user_email ?? row.partner_email ?? "").trim();
+  if (!email) return null;
+
+  return {
+    companyName: String(row.company_name ?? row.full_name ?? "Organizer"),
+    email,
+  };
+}
+
+export async function recordAuditDeliverySkip(input: {
+  listingId: string;
+  organizerId: string;
+  reason: string;
+}) {
+  const { v4: uuid } = await import("uuid");
+  try {
+    await pool.query(
+      `INSERT INTO event_audit_reports
+         (id, listing_id, organizer_id, trigger_kind, recipient_email, pdf_filename, report_summary_json)
+       VALUES (:id, :listingId, :organizerId, 'auto', :recipientEmail, :pdfFilename, :summary)`,
+      {
+        id: uuid(),
+        listingId: input.listingId,
+        organizerId: input.organizerId,
+        recipientEmail: `skipped:${input.reason.slice(0, 200)}`,
+        pdfFilename: "skipped",
+        summary: JSON.stringify({ skipped: true, reason: input.reason }),
+      },
+    );
+  } catch (err) {
+    if (isMissingSchemaError(err)) return;
+    throw err;
+  }
+}
+
+async function fetchSalesByTier(listingId: string) {
+  const mapRows = (rows: RowDataPacket[]) =>
+    rows.map((r) => ({
+      tier: String(r.tier),
+      tickets: Number(r.tickets ?? 0),
+      revenue: Number(r.revenue ?? 0),
+    }));
+
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT COALESCE(ltt.name, ut.ticket_tier_name, 'Standard') AS tier,
+         COUNT(ut.id) AS tickets,
+         COALESCE(SUM(ut.amount_paid), 0) AS revenue
+       FROM user_tickets ut
+       LEFT JOIN listing_ticket_tiers ltt ON ltt.id = ut.ticket_tier_id
+       WHERE ut.listing_id = :listingId
+       GROUP BY COALESCE(ltt.name, ut.ticket_tier_name, 'Standard')
+       ORDER BY revenue DESC`,
+      { listingId },
+    );
+    return mapRows(rows);
+  } catch (err) {
+    if (!isMissingSchemaError(err)) throw err;
+  }
+
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT COALESCE(ut.ticket_tier_name, 'Standard') AS tier,
+         COUNT(ut.id) AS tickets,
+         COALESCE(SUM(ut.amount_paid), 0) AS revenue
+       FROM user_tickets ut
+       WHERE ut.listing_id = :listingId
+       GROUP BY COALESCE(ut.ticket_tier_name, 'Standard')
+       ORDER BY revenue DESC`,
+      { listingId },
+    );
+    return mapRows(rows);
+  } catch (err) {
+    if (!isMissingSchemaError(err)) throw err;
+  }
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT 'Standard' AS tier,
+       COUNT(*) AS tickets,
+       COALESCE(SUM(amount_paid), 0) AS revenue
+     FROM user_tickets
+     WHERE listing_id = :listingId`,
+    { listingId },
+  );
+  return mapRows(rows);
+}
+
 export async function getOrganizerAudit(organizerId: string): Promise<OrganizerAuditSnapshot> {
   const settlement = await getOrganizerSettlementBalances(organizerId);
 
@@ -109,18 +264,49 @@ export async function getOrganizerAudit(organizerId: string): Promise<OrganizerA
     { organizerId },
   );
 
-  const [refundRows] = await pool.query<RowDataPacket[]>(
-    `SELECT COALESCE(SUM(refund_amount), 0) AS total
-     FROM ticket_refunds WHERE organizer_id = :organizerId AND status = 'completed'`,
-    { organizerId },
-  );
-
-  const [payoutRows] = await pool.query<RowDataPacket[]>(
-    `SELECT COALESCE(SUM(amount_mwk), 0) AS total
-     FROM organizer_payouts
-     WHERE organizer_id = :organizerId AND status = 'completed'`,
-    { organizerId },
-  );
+  const [refundRows, payoutRows, monthlyPayouts, refundTimeline, payoutTimeline] =
+    await Promise.all([
+      safeAuditQuery(async () => {
+        const [rows] = await pool.query<RowDataPacket[]>(
+          `SELECT COALESCE(SUM(refund_amount), 0) AS total
+           FROM ticket_refunds WHERE organizer_id = :organizerId AND status = 'completed'`,
+          { organizerId },
+        );
+        return rows;
+      }, [{ total: 0 }] as RowDataPacket[]),
+      safeAuditQuery(async () => {
+        const [rows] = await pool.query<RowDataPacket[]>(
+          `SELECT COALESCE(SUM(amount_mwk), 0) AS total
+           FROM organizer_payouts
+           WHERE organizer_id = :organizerId AND status = 'completed'`,
+          { organizerId },
+        );
+        return rows;
+      }, [{ total: 0 }] as RowDataPacket[]),
+      fetchMonthlyPayouts(organizerId),
+      safeAuditQuery(async () => {
+        const [rows] = await pool.query<RowDataPacket[]>(
+          `SELECT tr.id, tr.refund_amount AS amount, tr.created_at AS at, tr.status, l.title AS listingTitle
+           FROM ticket_refunds tr
+           JOIN orders o ON o.id = tr.order_id
+           LEFT JOIN listings l ON l.id = o.listing_id
+           WHERE tr.organizer_id = :organizerId
+           ORDER BY tr.created_at DESC LIMIT 50`,
+          { organizerId },
+        );
+        return rows;
+      }, []),
+      safeAuditQuery(async () => {
+        const [rows] = await pool.query<RowDataPacket[]>(
+          `SELECT id, amount_mwk AS amount, requested_at AS at, status, paychangu_charge_id AS reference
+           FROM organizer_payouts
+           WHERE organizer_id = :organizerId
+           ORDER BY requested_at DESC LIMIT 50`,
+          { organizerId },
+        );
+        return rows;
+      }, []),
+    ]);
 
   const [monthlyRevenue] = await pool.query<RowDataPacket[]>(
     `SELECT DATE_FORMAT(o.created_at, '%Y-%m') AS month,
@@ -145,16 +331,6 @@ export async function getOrganizerAudit(organizerId: string): Promise<OrganizerA
      GROUP BY l.id, l.title
      HAVING revenue > 0 OR tickets > 0
      ORDER BY revenue DESC`,
-    { organizerId },
-  );
-
-  const [monthlyPayouts] = await pool.query<RowDataPacket[]>(
-    `SELECT DATE_FORMAT(created_at, '%Y-%m') AS month,
-       COALESCE(SUM(amount_mwk), 0) AS amount
-     FROM organizer_payouts
-     WHERE organizer_id = :organizerId AND status = 'completed'
-     GROUP BY DATE_FORMAT(created_at, '%Y-%m')
-     ORDER BY month ASC`,
     { organizerId },
   );
 
@@ -193,15 +369,6 @@ export async function getOrganizerAudit(organizerId: string): Promise<OrganizerA
     });
   }
 
-  const [refundTimeline] = await pool.query<RowDataPacket[]>(
-    `SELECT tr.id, tr.refund_amount AS amount, tr.created_at AS at, tr.status, l.title AS listingTitle
-     FROM ticket_refunds tr
-     JOIN orders o ON o.id = tr.order_id
-     LEFT JOIN listings l ON l.id = o.listing_id
-     WHERE tr.organizer_id = :organizerId
-     ORDER BY tr.created_at DESC LIMIT 50`,
-    { organizerId },
-  );
   for (const r of refundTimeline) {
     timeline.push({
       id: `refund-${r.id}`,
@@ -213,13 +380,6 @@ export async function getOrganizerAudit(organizerId: string): Promise<OrganizerA
     });
   }
 
-  const [payoutTimeline] = await pool.query<RowDataPacket[]>(
-    `SELECT id, amount_mwk AS amount, created_at AS at, status, reference
-     FROM organizer_payouts
-     WHERE organizer_id = :organizerId
-     ORDER BY created_at DESC LIMIT 50`,
-    { organizerId },
-  );
   for (const r of payoutTimeline) {
     const status = String(r.status);
     timeline.push({
@@ -287,16 +447,7 @@ export async function buildEventAuditSnapshot(listingId: string): Promise<EventA
   if (!listingRow) throw new Error("Event not found");
 
   const organizerId = String(listingRow.organizer_id);
-
-  const [profileRows] = await pool.query<RowDataPacket[]>(
-    `SELECT op.company_name, u.email
-     FROM organizer_profiles op
-     JOIN users u ON u.id = op.user_id
-     WHERE op.user_id = :organizerId`,
-    { organizerId },
-  );
-  const profile = profileRows[0];
-  if (!profile) throw new Error("Organizer not found");
+  const profile = await resolveOrganizerContact(organizerId);
 
   const [summaryRows] = await pool.query<RowDataPacket[]>(
     `SELECT
@@ -335,17 +486,7 @@ export async function buildEventAuditSnapshot(listingId: string): Promise<EventA
     { listingId },
   );
 
-  const [salesByTier] = await pool.query<RowDataPacket[]>(
-    `SELECT COALESCE(tt.name, ut.ticket_tier_name, 'Standard') AS tier,
-       COUNT(ut.id) AS tickets,
-       COALESCE(SUM(ut.amount_paid), 0) AS revenue
-     FROM user_tickets ut
-     LEFT JOIN ticket_tiers tt ON tt.id = ut.ticket_tier_id
-     WHERE ut.listing_id = :listingId
-     GROUP BY COALESCE(tt.name, ut.ticket_tier_name, 'Standard')
-     ORDER BY revenue DESC`,
-    { listingId },
-  );
+  const salesByTier = await fetchSalesByTier(listingId);
 
   const [paymentMethods] = await pool.query<RowDataPacket[]>(
     `SELECT payment_method AS method, COUNT(*) AS cnt, COALESCE(SUM(total_mwk), 0) AS amount
@@ -384,8 +525,8 @@ export async function buildEventAuditSnapshot(listingId: string): Promise<EventA
     listingId,
     title: String(listingRow.title),
     organizerId,
-    companyName: String(profile.company_name),
-    organizerEmail: String(profile.email),
+    companyName: profile.companyName,
+    organizerEmail: profile.email,
     eventStartsOn: listingRow.event_starts_on
       ? String(listingRow.event_starts_on).slice(0, 10)
       : null,
@@ -410,11 +551,7 @@ export async function buildEventAuditSnapshot(listingId: string): Promise<EventA
         tickets: Number(r.tickets ?? 0),
         revenue: Number(r.revenue ?? 0),
       })),
-      salesByTier: salesByTier.map((r) => ({
-        tier: String(r.tier),
-        tickets: Number(r.tickets ?? 0),
-        revenue: Number(r.revenue ?? 0),
-      })),
+      salesByTier,
       paymentMethods: paymentMethods.map((r) => ({
         method: String(r.method ?? "unknown"),
         count: Number(r.cnt ?? 0),
@@ -445,20 +582,52 @@ export async function buildEventAuditSnapshot(listingId: string): Promise<EventA
 
 export async function listEventsForAdminAudit(search?: string) {
   const q = search?.trim();
-  const [rows] = await pool.query<RowDataPacket[]>(
-    `SELECT l.id AS listingId, l.title, l.date_label AS dateLabel, l.event_starts_on AS eventStartsOn,
+  const params = q ? { q: `%${q}%` } : {};
+  const searchClause = q
+    ? "AND (l.title LIKE :q OR op.company_name LIKE :q OR u.full_name LIKE :q OR l.id LIKE :q)"
+    : "";
+
+  const sqlWithAudit = `
+    SELECT l.id AS listingId, l.title, l.date_label AS dateLabel, l.event_starts_on AS eventStartsOn,
        l.time_label AS timeLabel, l.status, l.event_format AS eventFormat,
-       op.company_name AS companyName,
+       COALESCE(op.company_name, u.full_name, 'Unknown organizer') AS companyName,
        (SELECT MAX(sent_at) FROM event_audit_reports ear WHERE ear.listing_id = l.id) AS lastAuditSentAt,
        (SELECT COUNT(*) FROM event_audit_reports ear WHERE ear.listing_id = l.id AND ear.trigger_kind = 'auto') AS autoAuditSent
      FROM listings l
-     JOIN organizer_profiles op ON op.user_id = l.organizer_id
+     JOIN users u ON u.id = l.organizer_id
+     LEFT JOIN organizer_profiles op ON op.user_id = l.organizer_id
      WHERE l.kind = 'event'
-       ${q ? "AND (l.title LIKE :q OR op.company_name LIKE :q OR l.id LIKE :q)" : ""}
+       ${searchClause}
      ORDER BY l.event_starts_on DESC, l.created_at DESC
-     LIMIT 200`,
-    q ? { q: `%${q}%` } : {},
-  );
+     LIMIT 200`;
+
+  const sqlWithoutAudit = `
+    SELECT l.id AS listingId, l.title, l.date_label AS dateLabel, l.event_starts_on AS eventStartsOn,
+       l.time_label AS timeLabel, l.status, l.event_format AS eventFormat,
+       COALESCE(op.company_name, u.full_name, 'Unknown organizer') AS companyName
+     FROM listings l
+     JOIN users u ON u.id = l.organizer_id
+     LEFT JOIN organizer_profiles op ON op.user_id = l.organizer_id
+     WHERE l.kind = 'event'
+       ${searchClause}
+     ORDER BY l.event_starts_on DESC, l.created_at DESC
+     LIMIT 200`;
+
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>(sqlWithAudit, params);
+    return mapAdminAuditRows(rows);
+  } catch (err) {
+    if (!isMissingSchemaError(err)) throw err;
+    const [rows] = await pool.query<RowDataPacket[]>(sqlWithoutAudit, params);
+    return mapAdminAuditRows(rows).map((r) => ({
+      ...r,
+      lastAuditSentAt: null,
+      autoAuditSent: false,
+    }));
+  }
+}
+
+function mapAdminAuditRows(rows: RowDataPacket[]) {
   return rows.map((r) => ({
     listingId: r.listingId as string,
     title: r.title as string,

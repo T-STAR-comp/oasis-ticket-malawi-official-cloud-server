@@ -6,6 +6,8 @@ import {
   buildEventAuditSnapshot,
   hasAutoAuditReport,
   recordAuditReport,
+  recordAuditDeliverySkip,
+  tryResolveOrganizerContact,
 } from "./event-audit.service.js";
 import { generateEventAuditPdf } from "./event-audit-pdf.service.js";
 
@@ -61,11 +63,14 @@ export async function processEventAuditReports() {
   let rows: RowDataPacket[] = [];
   try {
     const [result] = await pool.query<RowDataPacket[]>(
-      `SELECT l.id AS listingId, l.title, l.event_starts_on AS eventStartsOn, l.time_label AS timeLabel
+      `SELECT l.id AS listingId, l.title, l.organizer_id AS organizerId,
+         l.event_starts_on AS eventStartsOn, l.time_label AS timeLabel
        FROM listings l
+       JOIN users u ON u.id = l.organizer_id
        WHERE l.kind = 'event'
          AND l.event_starts_on IS NOT NULL
          AND l.status NOT IN ('draft', 'cancelled')
+         AND NULLIF(TRIM(u.email), '') IS NOT NULL
          AND NOT EXISTS (
            SELECT 1 FROM event_audit_reports ear
            WHERE ear.listing_id = l.id AND ear.trigger_kind = 'auto'
@@ -82,8 +87,11 @@ export async function processEventAuditReports() {
 
   const now = Date.now();
   let sent = 0;
+  let skipped = 0;
 
   for (const row of rows) {
+    const listingId = row.listingId as string;
+    const organizerId = row.organizerId as string;
     const startsAt = parseEventStartsAt(
       row.eventStartsOn as string,
       String(row.timeLabel ?? ""),
@@ -91,22 +99,55 @@ export async function processEventAuditReports() {
     if (!startsAt || startsAt.getTime() > now) continue;
 
     try {
-      const already = await hasAutoAuditReport(row.listingId as string);
+      const already = await hasAutoAuditReport(listingId);
       if (already) continue;
 
+      const contact = await tryResolveOrganizerContact(organizerId);
+      if (!contact) {
+        await recordAuditDeliverySkip({
+          listingId,
+          organizerId,
+          reason: "no_organizer_email",
+        });
+        skipped++;
+        console.warn(
+          "[event-audit] Skipped (no organizer email):",
+          listingId,
+          row.title,
+        );
+        continue;
+      }
+
       await sendEventAuditReport({
-        listingId: row.listingId as string,
+        listingId,
         triggerKind: "auto",
       });
       sent++;
-      console.log("[event-audit] Sent auto report for", row.listingId, row.title);
+      console.log("[event-audit] Sent auto report for", listingId, row.title);
     } catch (err) {
-      console.error("[event-audit] Failed for listing", row.listingId, err);
+      if (err instanceof Error && err.message === "Organizer email not found") {
+        await recordAuditDeliverySkip({
+          listingId,
+          organizerId,
+          reason: "no_organizer_email",
+        });
+        skipped++;
+        console.warn(
+          "[event-audit] Skipped (no organizer email):",
+          listingId,
+          row.title,
+        );
+        continue;
+      }
+      console.error("[event-audit] Failed for listing", listingId, err);
     }
   }
 
   if (sent > 0) {
     console.log(`[event-audit] Sent ${sent} automatic audit report(s)`);
+  }
+  if (skipped > 0) {
+    console.log(`[event-audit] Skipped ${skipped} event(s) with no deliverable organizer email`);
   }
 }
 
