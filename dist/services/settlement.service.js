@@ -30,6 +30,7 @@ function mapBalances(row, debt, salesRecovered, virtualPayoutHold) {
         outstandingRefundDebt: debt.outstandingRefundDebt,
         pendingCustomerRefunds: debt.pendingCustomerRefunds,
         settlementPolicy: "T+1",
+        settlementEpochDate: SETTLEMENT_EPOCH_DATE,
     };
 }
 export async function getOrganizerSettlementBalances(organizerId) {
@@ -37,7 +38,9 @@ export async function getOrganizerSettlementBalances(organizerId) {
     const salesRecovered = await getSalesRecoveredFromSettledSales(organizerId);
     const virtualPayoutHold = await getOrganizerVirtualPayoutHold(organizerId);
     const [rows] = await pool.query(`SELECT
-       COALESCE(SUM(o.subtotal_mwk), 0) AS totalEarnings,
+       COALESCE(SUM(
+         CASE WHEN ${WITHDRAWABLE_EPOCH_WHERE} THEN o.subtotal_mwk ELSE 0 END
+       ), 0) AS totalEarnings,
        COALESCE(SUM(
          CASE
            WHEN ${WITHDRAWABLE_EPOCH_WHERE} AND CURDATE() <= DATE(${PAYMENT_COMPLETED_AT})
@@ -75,7 +78,9 @@ export async function getOrganizerSettlementBalances(organizerId) {
 }
 export async function getPlatformSettlementBalances() {
     const [rows] = await pool.query(`SELECT
-       COALESCE(SUM(o.subtotal_mwk), 0) AS totalEarnings,
+       COALESCE(SUM(
+         CASE WHEN ${WITHDRAWABLE_EPOCH_WHERE} THEN o.subtotal_mwk ELSE 0 END
+       ), 0) AS totalEarnings,
        COALESCE(SUM(
          CASE
            WHEN ${WITHDRAWABLE_EPOCH_WHERE} AND CURDATE() <= DATE(${PAYMENT_COMPLETED_AT})
@@ -121,7 +126,7 @@ export async function getOrganizerSettlementLines(organizerId, limit = 100) {
        ${PAYMENT_COMPLETED_AT} AS paidAt,
        DATE_ADD(DATE(${PAYMENT_COMPLETED_AT}), INTERVAL 1 DAY) AS withdrawableAt,
        CASE
-         WHEN DATE(${PAYMENT_COMPLETED_AT}) < '${SETTLEMENT_EPOCH_DATE}' THEN 'settled'
+         WHEN DATE(${PAYMENT_COMPLETED_AT}) < '${SETTLEMENT_EPOCH_DATE}' THEN 'pre_epoch_excluded'
          WHEN l.status = 'cancelled' THEN 'cancelled_hold'
          WHEN ${UNVERIFIED_VIRTUAL_PAYOUT_WHERE}
               AND CURDATE() > DATE(${PAYMENT_COMPLETED_AT}) THEN 'virtual_payout_hold'
@@ -149,7 +154,9 @@ export async function getAdminSettlementByOrganizer() {
     const [rows] = await pool.query(`SELECT
        op.user_id AS organizerId,
        op.company_name AS companyName,
-       COALESCE(SUM(o.subtotal_mwk), 0) AS totalEarnings,
+       COALESCE(SUM(
+         CASE WHEN ${WITHDRAWABLE_EPOCH_WHERE} THEN o.subtotal_mwk ELSE 0 END
+       ), 0) AS totalEarnings,
        COALESCE(SUM(
          CASE
            WHEN ${WITHDRAWABLE_EPOCH_WHERE} AND CURDATE() <= DATE(${PAYMENT_COMPLETED_AT})

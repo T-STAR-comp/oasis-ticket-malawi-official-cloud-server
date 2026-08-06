@@ -6,9 +6,7 @@ import {
   isVirtualListingFormat,
 } from "../utils/virtual-events.js";
 
-import { WITHDRAWABLE_EPOCH_WHERE } from "../utils/settlement-epoch.js";
-
-const PAYMENT_COMPLETED_AT = `COALESCE(pl.completed_at, o.updated_at, o.created_at)`;
+import { PAYMENT_COMPLETED_AT, WITHDRAWABLE_EPOCH_WHERE } from "../utils/settlement-epoch.js";
 
 /** SQL fragment: listing is virtual and payout not yet admin-verified. */
 export const UNVERIFIED_VIRTUAL_PAYOUT_WHERE = `
@@ -76,10 +74,16 @@ export async function listVirtualEventsForAdmin(): Promise<AdminVirtualEventRow[
        l.virtual_event_type AS virtualEventType,
        l.virtual_payout_verified_at AS payoutVerifiedAt,
        l.virtual_first_session_verified_at AS firstSessionVerifiedAt,
-       COALESCE(SUM(CASE WHEN o.status = 'confirmed' THEN o.subtotal_mwk ELSE 0 END), 0) AS totalEarnings,
        COALESCE(SUM(
          CASE
-           WHEN o.status = 'confirmed' AND CURDATE() > DATE(${PAYMENT_COMPLETED_AT})
+           WHEN o.status = 'confirmed' AND ${WITHDRAWABLE_EPOCH_WHERE} THEN o.subtotal_mwk ELSE 0
+         END
+       ), 0) AS totalEarnings,
+       COALESCE(SUM(
+         CASE
+           WHEN o.status = 'confirmed'
+             AND ${WITHDRAWABLE_EPOCH_WHERE}
+             AND CURDATE() > DATE(${PAYMENT_COMPLETED_AT})
            THEN o.subtotal_mwk ELSE 0
          END
        ), 0) AS settledEarnings,

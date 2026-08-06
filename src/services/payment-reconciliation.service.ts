@@ -8,10 +8,11 @@ import {
   type LedgerRow,
 } from "./ledger.service.js";
 import { verifyMobileMoneyCharge } from "./paychangu.service.js";
+import { SETTLEMENT_EPOCH_DATE } from "../utils/settlement-epoch.js";
 import { log } from "../utils/logger.js";
 
-/** Only auto-reconcile payments created on or after this date. */
-const RECONCILIATION_SINCE = "2026-07-25";
+/** Only auto-reconcile payments created on or after the settlement epoch. */
+const RECONCILIATION_SINCE = SETTLEMENT_EPOCH_DATE;
 
 export type PaymentRecoveryResult =
   | { status: "already_fulfilled"; ticketCount: number }

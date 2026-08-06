@@ -7,7 +7,11 @@ import {
   refundPaymentMethodLabel,
 } from "./refund-payment.service.js";
 import { EXCLUDE_RESALE_ORDERS_SQL } from "../utils/settlement-filters.js";
-import { PAYMENT_COMPLETED_AT, WITHDRAWABLE_EPOCH_WHERE } from "../utils/settlement-epoch.js";
+import {
+  PAYMENT_COMPLETED_AT,
+  PAYOUT_EPOCH_WHERE,
+  WITHDRAWABLE_EPOCH_WHERE,
+} from "../utils/settlement-epoch.js";
 
 export type RefundDebtSummary = {
   refundDebt: number;
@@ -91,7 +95,10 @@ export async function addOrganizerRefundDebt(organizerId: string, amount: number
 async function getSettledActiveEarnings(organizerId: string): Promise<number> {
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT COALESCE(SUM(
-       CASE WHEN CURDATE() > DATE(${PAYMENT_COMPLETED_AT}) THEN o.subtotal_mwk ELSE 0 END
+       CASE
+         WHEN ${WITHDRAWABLE_EPOCH_WHERE} AND CURDATE() > DATE(${PAYMENT_COMPLETED_AT})
+         THEN o.subtotal_mwk ELSE 0
+       END
      ), 0) AS settledActive
      FROM orders o
      JOIN listings l ON l.id = o.listing_id
@@ -108,9 +115,10 @@ async function getSettledActiveEarnings(organizerId: string): Promise<number> {
 async function getPayoutTotals(organizerId: string) {
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT
-       COALESCE(SUM(CASE WHEN status IN ('pending','processing') THEN amount_mwk ELSE 0 END), 0) AS reserved,
-       COALESCE(SUM(CASE WHEN status = 'completed' THEN amount_mwk ELSE 0 END), 0) AS paidOut
-     FROM organizer_payouts WHERE organizer_id = :organizerId`,
+       COALESCE(SUM(CASE WHEN status IN ('pending','processing') AND ${PAYOUT_EPOCH_WHERE} THEN amount_mwk ELSE 0 END), 0) AS reserved,
+       COALESCE(SUM(CASE WHEN status = 'completed' AND ${PAYOUT_EPOCH_WHERE} THEN amount_mwk ELSE 0 END), 0) AS paidOut
+     FROM organizer_payouts p
+     WHERE p.organizer_id = :organizerId`,
     { organizerId },
   );
   return {

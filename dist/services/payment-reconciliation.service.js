@@ -3,9 +3,10 @@ import { pool } from "../db/pool.js";
 import { fulfillCheckout, fulfillFreeEventCheckout } from "./checkout.service.js";
 import { getLedgerById, parseCheckoutMeta, } from "./ledger.service.js";
 import { verifyMobileMoneyCharge } from "./paychangu.service.js";
+import { SETTLEMENT_EPOCH_DATE } from "../utils/settlement-epoch.js";
 import { log } from "../utils/logger.js";
-/** Only auto-reconcile payments created on or after this date. */
-const RECONCILIATION_SINCE = "2026-07-25";
+/** Only auto-reconcile payments created on or after the settlement epoch. */
+const RECONCILIATION_SINCE = SETTLEMENT_EPOCH_DATE;
 /** Whether tickets exist for this payment (primary order tickets or completed resell transfer). */
 export async function countFulfillmentTickets(ledger) {
     const [rows] = await pool.query(`SELECT COUNT(*) AS cnt FROM user_tickets WHERE order_id = :orderId`, { orderId: ledger.order_id });

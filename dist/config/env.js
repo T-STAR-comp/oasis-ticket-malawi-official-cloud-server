@@ -89,8 +89,8 @@ export const env = {
         })(),
     },
     settlement: {
-        /** Sales before this date are excluded from withdrawable balances (YYYY-MM-DD). */
-        epochDate: process.env.SETTLEMENT_EPOCH_DATE ?? "2026-07-25",
+        /** @deprecated Epoch is hardcoded in src/utils/settlement-epoch.ts (2026-08-05). */
+        epochDate: "2026-08-05",
     },
     images: {
         /** Absolute or server-relative path to image-bucket-folder (sibling of app on cPanel). */
