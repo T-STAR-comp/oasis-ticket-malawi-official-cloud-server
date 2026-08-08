@@ -10,6 +10,7 @@ import { startReminderPoller } from "./services/reminder.service.js";
 import { startEventAuditPoller } from "./services/event-audit-delivery.service.js";
 import { startTicketExpiryPoller } from "./services/ticket-expiry.service.js";
 import { applySettlementEpochResetOnStartup } from "./services/settlement-balance-reset.service.js";
+import { startEsportsPoller } from "./services/esports-poller.service.js";
 import { settleResellSales } from "./services/resell.service.js";
 import { log } from "./utils/logger.js";
 
@@ -22,10 +23,17 @@ async function start() {
       database: env.mysql.database,
     });
     await ensureDefaultAdmin();
-    await applySettlementEpochResetOnStartup();
   } catch (error) {
     log.error("server", "Failed to connect to MySQL — server will not start", error);
     process.exit(1);
+  }
+
+  try {
+    await applySettlementEpochResetOnStartup();
+  } catch (error) {
+    log.warn("settlement-epoch", "Startup balance reset failed — server will continue", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   const app = createApp();
@@ -44,6 +52,7 @@ async function start() {
     startReminderPoller();
     startEventAuditPoller();
     startTicketExpiryPoller();
+    startEsportsPoller();
     setInterval(() => void settleResellSales(), 60 * 60 * 1000);
     void settleResellSales();
   });

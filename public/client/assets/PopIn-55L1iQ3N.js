@@ -1,1 +1,0 @@
-import{M as i,t as m}from"./index-C7VpVoqA.js";function r({children:t,className:n,delayMs:s=0,as:o="div"}){const a=s?{animationDelay:`${s}ms`}:void 0;return i.jsx(o,{className:m("tm-pop-in",n),style:a,children:t})}export{r as P};

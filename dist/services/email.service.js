@@ -327,3 +327,19 @@ export async function sendDelayedTicketApologyEmail(input) {
        <p>${input.ticketCount} ticket PDF(s) are attached.</p>
        ${guestLine}`), input.attachments);
 }
+export async function sendEsportsResultAuditEmails(input) {
+    const proofBlock = input.proofImageUrl
+        ? `<p><strong>Result proof:</strong> <a href="${input.proofImageUrl}">View screenshot</a></p>`
+        : "";
+    for (const participant of input.participants) {
+        await sendEmail(participant.email, `E-Sports result — ${input.event.name}`, wrapHtml("Tournament result", `<p>Hi ${participant.fullName},</p>
+         <p>The tournament <strong>${input.event.name}</strong> (${input.event.gameName}) held on ${input.event.eventDate} at ${input.event.eventTime} has concluded.</p>
+         <ul style="padding-left:18px;line-height:1.6">
+           <li><strong>Winner (in-game):</strong> ${input.event.winnerGameUsername ?? "—"}</li>
+           <li><strong>Grand prize:</strong> MK ${input.event.grandPrizeMwk.toLocaleString()}</li>
+           <li><strong>Your registered username:</strong> ${participant.gameUsername}</li>
+         </ul>
+         ${proofBlock}
+         <p>This message serves as an audit trail for all registered participants. Ticket Malawi E-Sports tournaments are skill-based competitive events — not gambling.</p>`));
+    }
+}

@@ -181,3 +181,54 @@ export function assertUploadRateLimit(organizerId: string) {
 export function hashBuffer(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex").slice(0, 16);
 }
+
+/** Admin-managed E-Sports images stored under esports/ in the image bucket. */
+export async function processAndStoreEsportsImage(
+  buffer: Buffer,
+  declaredMime: string | undefined,
+): Promise<{ path: string; url: string; sizeBytes: number }> {
+  if (!buffer?.length) throw new Error("No image data received");
+  if (buffer.length > IMAGE_MAX_UPLOAD_BYTES) {
+    throw new Error("Image must be 2 MB or smaller");
+  }
+
+  validateUploadMime(declaredMime);
+
+  const detected = detectImageType(buffer);
+  if (!detected) {
+    throw new Error("File content is not a valid JPEG, PNG, or WebP image");
+  }
+
+  let metadata: sharp.Metadata;
+  try {
+    metadata = await sharp(buffer, { failOn: "error", limitInputPixels: IMAGE_MAX_PIXELS })
+      .metadata();
+  } catch {
+    throw new Error("Could not read image — file may be corrupt or unsupported");
+  }
+
+  const width = metadata.width ?? 0;
+  const height = metadata.height ?? 0;
+  if (width <= 0 || height <= 0) throw new Error("Invalid image dimensions");
+
+  const processed = await sharp(buffer, { failOn: "error", limitInputPixels: IMAGE_MAX_PIXELS })
+    .rotate()
+    .resize({ width: IMAGE_MAX_WIDTH, withoutEnlargement: true, fit: "inside" })
+    .webp({ quality: 82, effort: 4 })
+    .toBuffer();
+
+  const bucketRoot = resolveImageBucketDir();
+  const esportsDir = path.join(bucketRoot, "esports");
+  await fs.mkdir(esportsDir, { recursive: true });
+
+  const fileName = `${uuid()}.webp`;
+  const absolutePath = path.join(esportsDir, fileName);
+  await fs.writeFile(absolutePath, processed, { mode: 0o644 });
+
+  const storedPath = `${IMAGE_BUCKET_URL_PREFIX}/esports/${fileName}`;
+  return {
+    path: storedPath,
+    url: buildPublicImageUrl(storedPath),
+    sizeBytes: processed.length,
+  };
+}

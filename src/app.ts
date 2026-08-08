@@ -22,6 +22,7 @@ import { referrerRouter } from "./routes/referrer.routes.js";
 import { careersRouter } from "./routes/careers.routes.js";
 import { resellRouter } from "./routes/resell.routes.js";
 import { selfCheckinRouter } from "./routes/self-checkin.routes.js";
+import { esportsRouter } from "./routes/esports.routes.js";
 import { pool } from "./db/pool.js";
 import { LEGAL_VERSION } from "./config/legal.js";
 import * as platformSettingsService from "./services/platform-settings.service.js";
@@ -154,6 +155,7 @@ export function createApp() {
   app.use("/api/careers", careersRouter);
   app.use("/api/resell", resellRouter);
   app.use("/api/self-checkin", selfCheckinRouter);
+  app.use("/api/esports", esportsRouter);
   app.use("/api/guest-tickets", guestTicketsRouter);
 
   registerAdminFrontend(app, env.serveFrontend);

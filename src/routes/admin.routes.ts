@@ -11,6 +11,9 @@ import * as adminInformationService from "../services/admin-information.service.
 import * as adminPaymentsService from "../services/admin-payments.service.js";
 import * as eventAuditService from "../services/event-audit.service.js";
 import { sendEventAuditReport } from "../services/event-audit-delivery.service.js";
+import * as esportsService from "../services/esports.service.js";
+import { processAndStoreEsportsImage } from "../services/image-upload.service.js";
+import { listingImageUpload } from "../middleware/listing-image-upload.js";
 import { reconcileAllProcessingPayouts } from "../services/payout-reconciliation.service.js";
 import { requireAuth, requireRole, signToken, type AuthedRequest } from "../middleware/auth.js";
 import { fail, ok } from "../utils/http.js";
@@ -591,4 +594,112 @@ adminRouter.post("/information/send-email", async (req, res, next) => {
     if (err instanceof Error) return fail(res, err.message, 400);
     next(err);
   }
+});
+
+const esportsEventBody = z.object({
+  name: z.string().min(2).max(255),
+  description: z.string().min(10),
+  eventDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  eventTime: z.string().min(1).max(32),
+  entryPriceMwk: z.number().int().min(0),
+  imageUrl: z.string().nullable().optional(),
+  gameName: z.string().min(1).max(128),
+  matchDurationMinutes: z.number().int().min(1),
+  grandPrizeMwk: z.number().int().min(0),
+  maxSlots: z.number().int().min(1).max(10000).optional(),
+  status: z.enum(["draft", "published"]).optional(),
+});
+
+adminRouter.get("/esports/events", async (_req, res, next) => {
+  try {
+    return ok(res, await esportsService.listAdminEsportsEvents(true));
+  } catch (err) {
+    next(err);
+  }
+});
+
+adminRouter.get("/esports/events/:id", async (req, res, next) => {
+  try {
+    const event = await esportsService.getAdminEsportsEvent(req.params.id);
+    if (!event) return fail(res, "E-Sports event not found", 404);
+    return ok(res, event);
+  } catch (err) {
+    next(err);
+  }
+});
+
+adminRouter.post("/esports/events", async (req, res, next) => {
+  try {
+    const admin = (req as AuthedRequest).user!;
+    const body = esportsEventBody.parse(req.body);
+    const event = await esportsService.createEsportsEvent(admin.id, body);
+    return ok(res, event, 201);
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid event data", 400);
+    if (err instanceof Error) return fail(res, err.message, 400);
+    next(err);
+  }
+});
+
+adminRouter.patch("/esports/events/:id", async (req, res, next) => {
+  try {
+    const body = esportsEventBody.partial().parse(req.body);
+    const event = await esportsService.updateEsportsEvent(req.params.id, body);
+    return ok(res, event);
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid event data", 400);
+    if (err instanceof Error) return fail(res, err.message, 400);
+    next(err);
+  }
+});
+
+adminRouter.patch("/esports/events/:id/match-access", async (req, res, next) => {
+  try {
+    const body = z
+      .object({
+        matchLink: z.string().url().nullable().optional(),
+        matchPassword: z.string().max(128).nullable().optional(),
+      })
+      .parse(req.body);
+    const event = await esportsService.updateEsportsMatchAccess(req.params.id, body);
+    return ok(res, event);
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid match access data", 400);
+    if (err instanceof Error) return fail(res, err.message, 400);
+    next(err);
+  }
+});
+
+adminRouter.post("/esports/events/:id/settle-winner", async (req, res, next) => {
+  try {
+    const body = z
+      .object({
+        registrationId: z.string().uuid(),
+        proofImageUrl: z.string().min(1),
+      })
+      .parse(req.body);
+    const event = await esportsService.settleEsportsWinner(req.params.id, body);
+    return ok(res, event);
+  } catch (err) {
+    if (err instanceof z.ZodError) return fail(res, "Invalid winner settlement data", 400);
+    if (err instanceof Error) return fail(res, err.message, 400);
+    next(err);
+  }
+});
+
+adminRouter.post("/esports/uploads/image", (req, res, next) => {
+  listingImageUpload(req, res, async (err: unknown) => {
+    if (err) {
+      return fail(res, err instanceof Error ? err.message : "Upload failed", 400);
+    }
+    try {
+      const file = req.file;
+      if (!file?.buffer?.length) return fail(res, "No image file provided", 400);
+      const stored = await processAndStoreEsportsImage(file.buffer, file.mimetype);
+      return ok(res, stored, 201);
+    } catch (uploadErr) {
+      if (uploadErr instanceof Error) return fail(res, uploadErr.message, 400);
+      next(uploadErr);
+    }
+  });
 });

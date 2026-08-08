@@ -40,6 +40,8 @@
     "db:migrate:guest-checkout": "node scripts/run-sql.js database/migration-v24-guest-checkout.sql",
     "db:migrate:event-layout": "node scripts/run-sql.js database/migration-v25-event-layout.sql",
     "db:migrate:event-audit": "node scripts/run-sql.js database/migration-v26-event-audit-reports.sql",
+    "db:migrate:esports": "node scripts/run-sql.js database/migration-v27-esports.sql",
+    "db:migrate:esports-slots": "node scripts/run-sql.js database/migration-v28-esports-slots.sql",
     "photos:optimize": "node scripts/optimize-marketing-photos.mjs"
   },
   "dependencies": {

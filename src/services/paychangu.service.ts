@@ -76,7 +76,8 @@ function normalizeMobile(phone: string): string {
 }
 
 function splitName(fullName: string): { first: string; last: string } {
-  const parts = fullName.trim().split(/\s+/);
+  const normalized = String(fullName ?? "").trim() || "Customer";
+  const parts = normalized.split(/\s+/);
   if (parts.length === 1) return { first: parts[0], last: "Customer" };
   return { first: parts[0], last: parts.slice(1).join(" ") };
 }
