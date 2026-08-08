@@ -1,5 +1,5 @@
 -- E-Sports tournaments (admin-managed competitive events)
-USE ticket_malawi;
+-- Database is selected via MYSQL_DATABASE in .env (run-sql.js).
 
 CREATE TABLE IF NOT EXISTS esports_events (
   id                      CHAR(36)     NOT NULL PRIMARY KEY,

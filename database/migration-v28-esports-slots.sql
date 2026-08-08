@@ -1,5 +1,5 @@
 -- E-Sports tournament slot capacity (safe to re-run)
-USE ticket_malawi;
+-- Database is selected via MYSQL_DATABASE in .env (run-sql.js).
 
 SET @has_max_slots := (
   SELECT COUNT(*)
