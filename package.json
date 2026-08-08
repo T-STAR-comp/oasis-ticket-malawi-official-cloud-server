@@ -42,6 +42,7 @@
     "db:migrate:event-audit": "node scripts/run-sql.js database/migration-v26-event-audit-reports.sql",
     "db:migrate:esports": "node scripts/run-sql.js database/migration-v27-esports.sql",
     "db:migrate:esports-slots": "node scripts/run-sql.js database/migration-v28-esports-slots.sql",
+    "db:migrate:esports-all": "npm run db:migrate:esports && npm run db:migrate:esports-slots",
     "photos:optimize": "node scripts/optimize-marketing-photos.mjs"
   },
   "dependencies": {

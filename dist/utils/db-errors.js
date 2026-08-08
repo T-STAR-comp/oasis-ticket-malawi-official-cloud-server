@@ -6,6 +6,23 @@ export function isReferencedRowError(err) {
     const e = err;
     return e?.code === "ER_ROW_IS_REFERENCED_2" || e?.errno === 1451;
 }
+export function isMissingTableError(err) {
+    const e = err;
+    return e?.code === "ER_NO_SUCH_TABLE" || e?.errno === 1146;
+}
+export function isMissingColumnError(err) {
+    const e = err;
+    return e?.code === "ER_BAD_FIELD_ERROR" || e?.errno === 1054;
+}
+/** Actionable message when production DB is behind the deployed code. */
+export function friendlySchemaMessage(err, reqPath) {
+    if (!isMissingTableError(err) && !isMissingColumnError(err))
+        return null;
+    if (reqPath.includes("/esports")) {
+        return "E-Sports database tables are missing or outdated on this server. In the app folder run: npm run db:migrate:esports-all";
+    }
+    return "Database schema update required on this server. Contact your administrator.";
+}
 export function friendlyDuplicateMessage(err) {
     const sqlMessage = err?.sqlMessage?.toLowerCase() ?? "";
     if (sqlMessage.includes("email")) {

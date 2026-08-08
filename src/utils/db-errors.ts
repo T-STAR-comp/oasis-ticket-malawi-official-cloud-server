@@ -14,6 +14,27 @@ export function isReferencedRowError(err: unknown): err is MySqlError {
   return e?.code === "ER_ROW_IS_REFERENCED_2" || e?.errno === 1451;
 }
 
+export function isMissingTableError(err: unknown): err is MySqlError {
+  const e = err as MySqlError;
+  return e?.code === "ER_NO_SUCH_TABLE" || e?.errno === 1146;
+}
+
+export function isMissingColumnError(err: unknown): err is MySqlError {
+  const e = err as MySqlError;
+  return e?.code === "ER_BAD_FIELD_ERROR" || e?.errno === 1054;
+}
+
+/** Actionable message when production DB is behind the deployed code. */
+export function friendlySchemaMessage(err: unknown, reqPath: string): string | null {
+  if (!isMissingTableError(err) && !isMissingColumnError(err)) return null;
+
+  if (reqPath.includes("/esports")) {
+    return "E-Sports database tables are missing or outdated on this server. In the app folder run: npm run db:migrate:esports-all";
+  }
+
+  return "Database schema update required on this server. Contact your administrator.";
+}
+
 export function friendlyDuplicateMessage(err: unknown): string {
   const sqlMessage = (err as MySqlError)?.sqlMessage?.toLowerCase() ?? "";
 

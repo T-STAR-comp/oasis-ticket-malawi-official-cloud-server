@@ -1,5 +1,5 @@
 import { ZodError } from "zod";
-import { friendlyDuplicateMessage, friendlyReferencedMessage, isDuplicateEntryError, isReferencedRowError, } from "../utils/db-errors.js";
+import { friendlyDuplicateMessage, friendlyReferencedMessage, friendlySchemaMessage, isDuplicateEntryError, isReferencedRowError, } from "../utils/db-errors.js";
 import { formatZodError } from "../utils/zod-helpers.js";
 import { log } from "../utils/logger.js";
 export function errorHandler(err, req, res, _next) {
@@ -27,6 +27,14 @@ export function errorHandler(err, req, res, _next) {
     }
     if (err instanceof Error && err.message === "Forbidden") {
         return res.status(403).json({ success: false, error: "Forbidden" });
+    }
+    const schemaMessage = friendlySchemaMessage(err, req.originalUrl);
+    if (schemaMessage) {
+        log.warn("http", "Database schema mismatch", err, {
+            method: req.method,
+            path: req.originalUrl,
+        });
+        return res.status(503).json({ success: false, error: schemaMessage });
     }
     log.error("http", "Unhandled request error", err, {
         method: req.method,
