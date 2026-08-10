@@ -42,7 +42,9 @@
     "db:migrate:event-audit": "node scripts/run-sql.js database/migration-v26-event-audit-reports.sql",
     "db:migrate:esports": "node scripts/run-sql.js database/migration-v27-esports.sql",
     "db:migrate:esports-slots": "node scripts/run-sql.js database/migration-v28-esports-slots.sql",
-    "db:migrate:esports-all": "npm run db:migrate:esports && npm run db:migrate:esports-slots",
+    "db:migrate:esports-dgpa": "node scripts/run-sql.js database/migration-v29-esports-dgpa.sql",
+    "db:migrate:esports-free-entry": "node scripts/run-sql.js database/migration-v30-esports-free-entry.sql",
+    "db:migrate:esports-all": "npm run db:migrate:esports && npm run db:migrate:esports-slots && npm run db:migrate:esports-dgpa && npm run db:migrate:esports-free-entry",
     "photos:optimize": "node scripts/optimize-marketing-photos.mjs"
   },
   "dependencies": {

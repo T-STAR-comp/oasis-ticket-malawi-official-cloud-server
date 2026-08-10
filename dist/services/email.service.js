@@ -327,6 +327,20 @@ export async function sendDelayedTicketApologyEmail(input) {
        <p>${input.ticketCount} ticket PDF(s) are attached.</p>
        ${guestLine}`), input.attachments);
 }
+export async function sendEsportsGrandPrizeIncreaseEmails(input) {
+    for (const participant of input.participants) {
+        await sendEmail(participant.email, `Prize pool increased — ${input.event.name}`, wrapHtml("Grand prize update", `<p>Hi ${participant.fullName},</p>
+         <p>The grand prize for <strong>${input.event.name}</strong> (${input.event.gameName}) has increased.</p>
+         <ul style="padding-left:18px;line-height:1.6">
+           <li><strong>Previous prize:</strong> MK ${input.previousPrizeMwk.toLocaleString()}</li>
+           <li><strong>New prize:</strong> MK ${input.newPrizeMwk.toLocaleString()}</li>
+           <li><strong>Increase:</strong> +MK ${input.increaseMwk.toLocaleString()}</li>
+           <li><strong>Your in-game name:</strong> ${participant.gameUsername}</li>
+         </ul>
+         <p>When more than half of tournament slots are filled, 70% of each new buy-in is added to the prize pool (Dynamic Grand Prize Allocation).</p>
+         <p>Tournament date: ${input.event.eventDate} at ${input.event.eventTime}.</p>`));
+    }
+}
 export async function sendEsportsResultAuditEmails(input) {
     const proofBlock = input.proofImageUrl
         ? `<p><strong>Result proof:</strong> <a href="${input.proofImageUrl}">View screenshot</a></p>`

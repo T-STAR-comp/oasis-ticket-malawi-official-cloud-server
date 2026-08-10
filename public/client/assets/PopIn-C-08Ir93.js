@@ -1,0 +1,1 @@
+import{Q as i,v as m}from"./index-D6hMvXzH.js";function r({children:n,className:o,delayMs:s=0,as:t="div"}){const a=s?{animationDelay:`${s}ms`}:void 0;return i.jsx(t,{className:m("tm-pop-in",o),style:a,children:n})}export{r as P};

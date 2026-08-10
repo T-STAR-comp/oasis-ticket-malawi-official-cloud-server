@@ -12,6 +12,10 @@ import {
 } from "./paychangu.service.js";
 import * as emailService from "./email.service.js";
 import { buildPublicImageUrl } from "../config/images.js";
+import {
+  dgpaApplies,
+  dgpaContributionFromBuyIn,
+} from "../utils/esports-dgpa.js";
 
 export type EsportsEventStatus = "draft" | "published" | "completed" | "archived";
 
@@ -26,8 +30,17 @@ export type EsportsEventInput = {
   matchDurationMinutes: number;
   grandPrizeMwk: number;
   maxSlots?: number;
+  isFreeEntry?: boolean;
   status?: EsportsEventStatus;
 };
+
+function normalizeEsportsEntry(input: { entryPriceMwk: number; isFreeEntry?: boolean }) {
+  const isFreeEntry = Boolean(input.isFreeEntry);
+  return {
+    isFreeEntry,
+    entryPriceMwk: isFreeEntry ? 0 : Math.max(0, Math.round(input.entryPriceMwk)),
+  };
+}
 
 function esportsSlotsMessage(
   participantCount: number,
@@ -62,10 +75,13 @@ function toPublicEsportsEvent(event: ReturnType<typeof mapEvent>) {
     eventDate: event.eventDate,
     eventTime: event.eventTime,
     entryPriceMwk: event.entryPriceMwk,
+    isFreeEntry: event.isFreeEntry,
     imageUrl: event.imageUrl,
     gameName: event.gameName,
     matchDurationMinutes: event.matchDurationMinutes,
     grandPrizeMwk: event.grandPrizeMwk,
+    baseGrandPrizeMwk: event.baseGrandPrizeMwk,
+    dgpaBoosted: event.grandPrizeMwk > event.baseGrandPrizeMwk,
     status: event.status,
     isCompleted: event.isCompleted,
     isSoldOut,
@@ -89,10 +105,12 @@ function mapEvent(row: RowDataPacket, participantCount?: number) {
     eventDate: String(row.event_date).slice(0, 10),
     eventTime: String(row.event_time),
     entryPriceMwk: Number(row.entry_price_mwk ?? 0),
+    isFreeEntry: Boolean(Number(row.is_free_entry ?? 0)) || Number(row.entry_price_mwk ?? 0) <= 0,
     imageUrl: row.image_url ? String(row.image_url) : null,
     gameName: String(row.game_name),
     matchDurationMinutes: Number(row.match_duration_minutes ?? 0),
     grandPrizeMwk: Number(row.grand_prize_mwk ?? 0),
+    baseGrandPrizeMwk: Number(row.base_grand_prize_mwk ?? row.grand_prize_mwk ?? 0),
     maxSlots: Math.max(1, Number(row.max_slots ?? 32)),
     status,
     matchLink: row.match_link ? String(row.match_link) : null,
@@ -205,13 +223,15 @@ export async function getAdminEsportsEvent(eventId: string) {
 
 export async function createEsportsEvent(adminUserId: string, input: EsportsEventInput) {
   const id = uuid();
+  const startingPrize = Math.max(0, Math.round(input.grandPrizeMwk));
+  const entry = normalizeEsportsEntry(input);
   await pool.query(
     `INSERT INTO esports_events (
-      id, name, description, event_date, event_time, entry_price_mwk, image_url,
-      game_name, match_duration_minutes, grand_prize_mwk, max_slots, status, created_by_admin_id
+      id, name, description, event_date, event_time, entry_price_mwk, is_free_entry, image_url,
+      game_name, match_duration_minutes, grand_prize_mwk, base_grand_prize_mwk, max_slots, status, created_by_admin_id
     ) VALUES (
-      :id, :name, :description, :eventDate, :eventTime, :entryPriceMwk, :imageUrl,
-      :gameName, :matchDurationMinutes, :grandPrizeMwk, :maxSlots, :status, :adminUserId
+      :id, :name, :description, :eventDate, :eventTime, :entryPriceMwk, :isFreeEntry, :imageUrl,
+      :gameName, :matchDurationMinutes, :grandPrizeMwk, :baseGrandPrizeMwk, :maxSlots, :status, :adminUserId
     )`,
     {
       id,
@@ -219,11 +239,13 @@ export async function createEsportsEvent(adminUserId: string, input: EsportsEven
       description: input.description.trim(),
       eventDate: input.eventDate,
       eventTime: input.eventTime.trim(),
-      entryPriceMwk: Math.max(0, Math.round(input.entryPriceMwk)),
+      entryPriceMwk: entry.entryPriceMwk,
+      isFreeEntry: entry.isFreeEntry ? 1 : 0,
       imageUrl: input.imageUrl?.trim() || null,
       gameName: input.gameName.trim(),
       matchDurationMinutes: Math.max(1, Math.round(input.matchDurationMinutes)),
-      grandPrizeMwk: Math.max(0, Math.round(input.grandPrizeMwk)),
+      grandPrizeMwk: startingPrize,
+      baseGrandPrizeMwk: startingPrize,
       maxSlots: Math.max(1, Math.round(input.maxSlots ?? 32)),
       status: input.status ?? "draft",
       adminUserId,
@@ -239,6 +261,18 @@ export async function updateEsportsEvent(eventId: string, input: Partial<Esports
     throw new Error("Completed events cannot be edited");
   }
 
+  const nextStartingPrize =
+    input.grandPrizeMwk != null ? Math.max(0, Math.round(input.grandPrizeMwk)) : null;
+  const syncLivePrize =
+    nextStartingPrize != null && existing.participantCount === 0 ? nextStartingPrize : null;
+  const entry =
+    input.isFreeEntry !== undefined || input.entryPriceMwk != null
+      ? normalizeEsportsEntry({
+          isFreeEntry: input.isFreeEntry ?? existing.isFreeEntry,
+          entryPriceMwk: input.entryPriceMwk ?? existing.entryPriceMwk,
+        })
+      : null;
+
   await pool.query(
     `UPDATE esports_events SET
        name = COALESCE(:name, name),
@@ -246,10 +280,12 @@ export async function updateEsportsEvent(eventId: string, input: Partial<Esports
        event_date = COALESCE(:eventDate, event_date),
        event_time = COALESCE(:eventTime, event_time),
        entry_price_mwk = COALESCE(:entryPriceMwk, entry_price_mwk),
+       is_free_entry = COALESCE(:isFreeEntry, is_free_entry),
        image_url = COALESCE(:imageUrl, image_url),
        game_name = COALESCE(:gameName, game_name),
        match_duration_minutes = COALESCE(:matchDurationMinutes, match_duration_minutes),
-       grand_prize_mwk = COALESCE(:grandPrizeMwk, grand_prize_mwk),
+       base_grand_prize_mwk = COALESCE(:baseGrandPrizeMwk, base_grand_prize_mwk),
+       grand_prize_mwk = COALESCE(:syncLivePrize, grand_prize_mwk),
        max_slots = COALESCE(:maxSlots, max_slots),
        status = COALESCE(:status, status)
      WHERE id = :eventId`,
@@ -259,15 +295,16 @@ export async function updateEsportsEvent(eventId: string, input: Partial<Esports
       description: input.description?.trim() ?? null,
       eventDate: input.eventDate ?? null,
       eventTime: input.eventTime?.trim() ?? null,
-      entryPriceMwk: input.entryPriceMwk != null ? Math.max(0, Math.round(input.entryPriceMwk)) : null,
+      entryPriceMwk: entry?.entryPriceMwk ?? null,
+      isFreeEntry: entry != null ? (entry.isFreeEntry ? 1 : 0) : null,
       imageUrl: input.imageUrl !== undefined ? input.imageUrl?.trim() || null : null,
       gameName: input.gameName?.trim() ?? null,
       matchDurationMinutes:
         input.matchDurationMinutes != null
           ? Math.max(1, Math.round(input.matchDurationMinutes))
           : null,
-      grandPrizeMwk:
-        input.grandPrizeMwk != null ? Math.max(0, Math.round(input.grandPrizeMwk)) : null,
+      baseGrandPrizeMwk: nextStartingPrize,
+      syncLivePrize,
       maxSlots: input.maxSlots != null ? Math.max(1, Math.round(input.maxSlots)) : null,
       status: input.status ?? null,
     } satisfies QueryParams,
@@ -368,6 +405,82 @@ export async function archiveExpiredEsportsEvents() {
        AND settled_at < DATE_SUB(NOW(), INTERVAL 24 HOUR)`,
   );
   return result.affectedRows;
+}
+
+/** After a registration is marked completed, apply DGPA and notify participants if the prize grew. */
+async function applyDgpaAfterRegistration(eventId: string, entryPriceMwk: number) {
+  const conn = await pool.getConnection();
+  let prizeIncreased = false;
+  let previousPrize = 0;
+  let newPrize = 0;
+  let increaseMwk = 0;
+
+  try {
+    await conn.beginTransaction();
+
+    const [eventRows] = await conn.query<RowDataPacket[]>(
+      `SELECT * FROM esports_events WHERE id = :eventId FOR UPDATE`,
+      { eventId },
+    );
+    const eventRow = eventRows[0];
+    if (!eventRow) {
+      await conn.rollback();
+      return;
+    }
+
+    const [countRows] = await conn.query<RowDataPacket[]>(
+      `SELECT COUNT(*) AS cnt FROM esports_registrations
+       WHERE event_id = :eventId AND payment_status = 'completed'`,
+      { eventId },
+    );
+    const completedCount = Number(countRows[0]?.cnt ?? 0);
+    const maxSlots = Math.max(1, Number(eventRow.max_slots ?? 32));
+    const buyIn = Math.max(0, Math.round(entryPriceMwk));
+
+    previousPrize = Number(eventRow.grand_prize_mwk ?? 0);
+    newPrize = previousPrize;
+
+    if (dgpaApplies(completedCount, maxSlots)) {
+      increaseMwk = dgpaContributionFromBuyIn(buyIn);
+      if (increaseMwk > 0) {
+        newPrize = previousPrize + increaseMwk;
+        await conn.query(
+          `UPDATE esports_events SET grand_prize_mwk = :newPrize WHERE id = :eventId`,
+          { eventId, newPrize },
+        );
+        prizeIncreased = true;
+      }
+    }
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+
+  if (!prizeIncreased) return;
+
+  const detail = await getAdminEsportsEvent(eventId);
+  if (!detail) return;
+
+  await emailService.sendEsportsGrandPrizeIncreaseEmails({
+    event: {
+      name: detail.name,
+      gameName: detail.gameName,
+      eventDate: detail.eventDate,
+      eventTime: detail.eventTime,
+    },
+    previousPrizeMwk: previousPrize,
+    newPrizeMwk: newPrize,
+    increaseMwk,
+    participants: detail.participants.map((p) => ({
+      fullName: p.fullName,
+      email: p.email,
+      gameUsername: p.gameUsername,
+    })),
+  });
 }
 
 async function ensureWallet(userId: string) {
@@ -512,9 +625,11 @@ export async function registerForEsportsEvent(
   }
 
   const entryPrice = Number(eventRow.entry_price_mwk ?? 0);
+  const isFreeEntry =
+    Boolean(Number(eventRow.is_free_entry ?? 0)) || entryPrice <= 0;
   const registrationId = uuid();
 
-  if (entryPrice <= 0) {
+  if (isFreeEntry) {
     await pool.query(
       `INSERT INTO esports_registrations (
         id, event_id, user_id, game_username, amount_paid_mwk, payment_status, payment_method, registered_at
@@ -523,6 +638,7 @@ export async function registerForEsportsEvent(
       )`,
       { id: registrationId, eventId, userId, gameUsername } satisfies QueryParams,
     );
+    await applyDgpaAfterRegistration(eventId, 0);
     return {
       registrationId,
       paymentStatus: "completed" as const,
@@ -618,11 +734,14 @@ export async function processPendingEsportsRegistration(registrationId: string) 
   }
 
   if (verify.success) {
+    const amountPaid = Number(row.amount_paid_mwk ?? 0);
+    const eventId = String(row.event_id);
     await pool.query(
       `UPDATE esports_registrations SET payment_status = 'completed', registered_at = NOW(), failure_reason = NULL
        WHERE id = :id`,
       { id: registrationId },
     );
+    await applyDgpaAfterRegistration(eventId, amountPaid);
     return { status: "completed" as const };
   }
 

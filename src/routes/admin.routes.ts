@@ -602,6 +602,7 @@ const esportsEventBody = z.object({
   eventDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   eventTime: z.string().min(1).max(32),
   entryPriceMwk: z.number().int().min(0),
+  isFreeEntry: z.boolean().optional(),
   imageUrl: z.string().nullable().optional(),
   gameName: z.string().min(1).max(128),
   matchDurationMinutes: z.number().int().min(1),
